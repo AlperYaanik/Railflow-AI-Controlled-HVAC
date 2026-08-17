@@ -16,8 +16,12 @@
 #                real vehicle data or the paywalled standard becomes available.
 #
 # NOTE: EN 13129:2016 and EN 14750:2024 are paywalled and publish no thermal
-# time constants. Nothing here asserts one. The thermal time constant is
-# DERIVED in src/cabin_model.py as C_eff / (UA + m_dot_fresh * c_p).
+# time constants. Nothing here asserts one. Both time constants are DERIVED in
+# src/config.py:system_time_constants() as the eigenvalues of the two-node
+# state matrix, and tests/test_physics.py checks the simulator against them.
+# They are occupancy-dependent:
+#   empty        tau_fast 1.28 min   tau_slow 56.7 min
+#   design load  tau_fast 1.14 min   tau_slow 45.2 min
 
 vehicle:
   class: mainline_regional          # [EN13129] EN 13129 covers main line rolling stock
@@ -38,6 +42,12 @@ envelope:
 
   solar_heat_gain_coefficient: 0.45 # [ASSUMPTION] Tinted/laminated rail glazing
 
+  # glazing_area_m2 counts windows on BOTH sides of the coach, but only one
+  # side faces the sun at any moment. Without this factor the solar gain is
+  # double-counted. We do not model orientation explicitly (deliberately out
+  # of scope), so this is the flat-rate stand-in for it.
+  sunlit_glazing_fraction: 0.5      # [ASSUMPTION] One side sunlit; no orientation model
+
 thermal_mass:
   # Effective heat capacity: cabin air plus the interior mass thermally coupled
   # to it on the timescale we care about (seats, panels, floor, luggage racks).
@@ -46,6 +56,14 @@ thermal_mass:
   interior_mass_capacity_j_k: 1.6e+6 # [ASSUMPTION] Dominates over the air term; drives the lag
                                      # Signed exponent required: PyYAML reads 1.6e6 as a string
   # C_eff = saloon_volume * air_density * air_cp + interior_mass_capacity
+
+  # Air <-> interior-mass coupling. The model uses TWO nodes, not one lumped
+  # node, because lumping them understates the boarding temperature spike by
+  # ~2x at the end of a dwell and ~5x in the first two minutes — and that
+  # spike is precisely the effect anticipatory control exists to handle.
+  interior_surface_area_m2: 250.0    # [ASSUMPTION] Seats, panels, floor, racks
+  internal_h_w_m2k: 6.0              # [TYPICAL] Natural convection, indoor surfaces
+  # hA_internal = interior_surface_area_m2 * internal_h_w_m2k
 
 ventilation:
   fresh_air_m3_h_per_passenger: 15.0 # [ASSUMPTION] EN 13129 mandates a per-passenger fresh
@@ -66,8 +84,14 @@ doors:
   air_exchange_m3_per_stop: 120.0    # [ASSUMPTION] Bulk exchange over a full dwell
 
 hvac:
-  cooling_capacity_w: 30000.0        # [TYPICAL] Mainline coach roof/underfloor HVAC unit
-  heating_capacity_w: 25000.0        # [TYPICAL] Same unit in heating mode
+  # Sized for the Egyptian design condition, NOT a generic European coach.
+  # A 30 kW unit (typical in temperate Europe) saturates on 1-6% of summer
+  # hours here: the steady-state peak load at T_out 46-48 C with 73 pax and
+  # full solar is 33-35 kW. An undersized unit would make the M5 controller
+  # comparison meaningless exactly when it matters most, because both
+  # controllers would sit pinned at the capacity limit.
+  cooling_capacity_w: 40000.0        # [ASSUMPTION] Hot-climate spec, ~20% margin on peak load
+  heating_capacity_w: 25000.0        # [TYPICAL] Rarely used in this climate
   cop_nominal: 2.8                   # [TYPICAL] Design-point coefficient of performance
   cop_degradation_per_k: 0.04        # [ASSUMPTION] COP falls as outdoor temperature rises
   cop_reference_t_out_c: 30.0        # [ASSUMPTION] Reference point for the degradation curve

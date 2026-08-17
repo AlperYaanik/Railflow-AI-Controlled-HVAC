@@ -82,11 +82,14 @@ The credibility of every downstream number rests here.
 ### M2 — A cabin simulator you can trust
 **Effort:** 3h — *the core of the project*
 
-**Build:** `src/cabin_model.py` — a lumped-capacitance (grey-box) energy balance:
+**Build:** `src/cabin_model.py` — a **two-node (2R2C)** grey-box network:
 
 ```
-C_eff · dT_in/dt = Q_pass + Q_solar + Q_trans + Q_inf + Q_door + Q_hvac
+C_air  · dT_air/dt  = Q_pass + Q_solar + Q_trans + Q_inf + Q_door + Q_hvac + hA·(T_mass − T_air)
+C_mass · dT_mass/dt = hA·(T_air − T_mass)
 ```
+
+**Why two nodes rather than one lumped node.** Tested before building, not assumed: lumping the 1.6 MJ/K interior mass into the air node means 68 boarding passengers heat 1.78 MJ/K instead of 0.18 MJ/K. That understates the boarding air-temperature spike by **2× at the end of an 8-minute dwell and 5× in the first two minutes**. Since that spike is the disturbance anticipatory control exists to catch, a single-node model would mute the project's central effect. The extra cost is one parameter (`hA`) and ~30 lines.
 
 | Term | Basis |
 |---|---|
@@ -99,22 +102,31 @@ C_eff · dT_in/dt = Q_pass + Q_solar + Q_trans + Q_inf + Q_door + Q_hvac
 
 **On the time constant — the most important design decision in this project.**
 
-There is no publicly citable time constant for a rail cabin. EN 13129 and EN 14750 are paywalled and publish none. Therefore we never assert one. In an RC model it is not a free parameter — it is a consequence:
+There is no publicly citable time constant for a rail cabin. EN 13129 and EN 14750 are paywalled and publish none. Therefore we never assert one. In an RC model it is not a free parameter — it is a consequence. For the two-node network, the two time constants are `−1/λ` for the eigenvalues of the 2×2 state matrix:
 
 ```
-τ_thermal = C_eff / (UA + ṁ_fresh · c_p)
+dT_air/dt  = −(UA + hA)/C_air  · T_air + hA/C_air  · T_mass
+dT_mass/dt =        hA/C_mass  · T_air − hA/C_mass · T_mass
 ```
 
-We assert `C_eff` and `UA` (individually defensible from geometry and materials); τ falls out. Every input can be challenged separately, and the answer to "where does that number come from?" is a derivation rather than a guess.
+We assert `C_air`, `C_mass`, `UA`, and `hA` (each individually defensible from geometry and materials); both τ fall out. Every input can be challenged separately, and the answer to "where does that number come from?" is a derivation rather than a guess.
+
+Derived values: **τ_fast ≈ 1.1–1.3 min** (air), **τ_slow ≈ 45–57 min** (whole cabin), varying with occupancy.
+
+> **A shortcut that was tried and rejected.** The familiar single-node form `C_eff / UA` is only valid when `hA ≫ UA`. Here `hA ≈ 1500 W/K` against `UA ≈ 740–1040 W/K`, so it under-reports the slow constant by **29%** (40.2 min against the true 56.7 min when empty). The physics test in M2 caught this by comparing the simulator against the derived value — exactly what that test exists for. The lesson generalises: a derivation is only worth its credibility if something checks it.
 
 The **actuator** lag (`tau_act` — compressor spin-up, damper travel, coil inertia) is genuinely unknown and is handled separately in M6.
 
-**Done when** these physics sanity tests pass (`tests/test_physics.py`):
-1. With HVAC off, `T_in` approaches `T_out` asymptotically
-2. Doubling passenger count doubles the passenger heat load
-3. Step response reaches 63% in ≈ the τ computed from `C_eff`/`UA`
+**Done when** the physics sanity tests pass (`tests/test_physics.py`, 20 tests):
+- **Free-float:** with HVAC off the cabin tends to `T_out` from both above and below; at equilibrium nothing drifts
+- **Linearity:** doubling passengers doubles the sensible load; solar is linear in GHI and uses only the sunlit glazing fraction
+- **Derived time constants:** the simulated 63% step-response time matches `system_time_constants()` within 15%, and the fast air mode is ≥5× faster than the slow mode
+- **Boarding spike:** 68 passengers over an 8-min dwell move air temperature >5 K, with air leading the interior mass
+- **Actuator:** capacity clamps, dead time delays delivery, the lag converges first-order, and `tau_act = 0` degenerates to instant delivery
+- **Energetics:** COP falls with `T_out` and honours its floor; electrical draw is coil load over COP; zero draw when off
+- **Numerical health:** a 60 s step and six 10 s steps agree within 0.05 K, and state stays finite under extreme forcing
 
-Test 3 is the one that matters: if the simulated response disagrees with the derived τ, either the model or the config is wrong. Catching that here costs minutes; catching it later invalidates every result.
+The time-constant test is the one that matters most: if the simulator disagrees with the derivation, either the model or the config is wrong. It earned its place immediately — it is what exposed the 29% error in the single-node shortcut.
 
 ---
 

@@ -1,5 +1,6 @@
 """Load cabin_params.yaml and expose derived physical quantities."""
 
+import math
 from pathlib import Path
 
 import yaml
@@ -14,11 +15,26 @@ def load_config(path: Path = CONFIG_PATH) -> dict:
         return yaml.safe_load(f)
 
 
-def effective_heat_capacity(cfg: dict) -> float:
-    """C_eff [J/K] = cabin air + interior mass coupled to it."""
+def air_heat_capacity(cfg: dict) -> float:
+    """C_air [J/K] of the saloon air alone — the fast node."""
     tm = cfg["thermal_mass"]
-    air = cfg["geometry"]["saloon_volume_m3"] * tm["air_density_kg_m3"] * tm["air_cp_j_kgk"]
-    return air + tm["interior_mass_capacity_j_k"]
+    return cfg["geometry"]["saloon_volume_m3"] * tm["air_density_kg_m3"] * tm["air_cp_j_kgk"]
+
+
+def interior_mass_capacity(cfg: dict) -> float:
+    """C_mass [J/K] of seats, panels, floor — the slow node."""
+    return cfg["thermal_mass"]["interior_mass_capacity_j_k"]
+
+
+def internal_coupling_ua(cfg: dict) -> float:
+    """hA [W/K] between the air node and the interior-mass node."""
+    tm = cfg["thermal_mass"]
+    return tm["interior_surface_area_m2"] * tm["internal_h_w_m2k"]
+
+
+def effective_heat_capacity(cfg: dict) -> float:
+    """C_eff [J/K] = air + interior mass. Sets the slow mode of the 2-node system."""
+    return air_heat_capacity(cfg) + interior_mass_capacity(cfg)
 
 
 def envelope_ua(cfg: dict) -> float:
@@ -38,21 +54,65 @@ def ventilation_ua(cfg: dict, n_pax: float) -> float:
     return fresh_air_mass_flow(cfg, n_pax) * cfg["thermal_mass"]["air_cp_j_kgk"]
 
 
-def thermal_time_constant(cfg: dict, n_pax: float | None = None) -> float:
-    """Cabin thermal time constant [s], DERIVED — never read from config.
+def system_time_constants(cfg: dict, n_pax: float | None = None) -> tuple[float, float]:
+    """Exact (tau_fast, tau_slow) [s] of the two-node cabin, DERIVED.
 
-    tau = C_eff / (UA_envelope + UA_ventilation)
+    The state matrix of the 2R2C network is
+
+        dTa/dt = -(UA + hA)/C_air  * Ta + hA/C_air  * Tm
+        dTm/dt =        hA/C_mass  * Ta - hA/C_mass * Tm
+
+    and its two time constants are -1/lambda for the eigenvalues of that 2x2.
+    Both are consequences of C and UA values declared in the config; neither is
+    asserted anywhere.
+
+    Note on a discarded shortcut: the familiar single-node approximation
+    C_eff / UA is only valid when hA >> UA. Here hA is ~1500 W/K against a UA of
+    ~740-1040 W/K, so that shortcut under-reports the slow constant by ~29%
+    (40.2 min against the true 56.7 min when empty). tests/test_physics.py
+    checks the simulator against these exact values, which is how the
+    discrepancy was found.
     """
     if n_pax is None:
         n_pax = cfg["occupancy"]["design_load_pax"]
-    return effective_heat_capacity(cfg) / (envelope_ua(cfg) + ventilation_ua(cfg, n_pax))
+
+    ua = envelope_ua(cfg) + ventilation_ua(cfg, n_pax)
+    ha = internal_coupling_ua(cfg)
+    c_air = air_heat_capacity(cfg)
+    c_mass = interior_mass_capacity(cfg)
+
+    a11 = -(ua + ha) / c_air
+    a12 = ha / c_air
+    a21 = ha / c_mass
+    a22 = -ha / c_mass
+
+    trace = a11 + a22
+    det = a11 * a22 - a12 * a21
+    disc = math.sqrt(trace * trace - 4.0 * det)
+
+    lambda_slow = (trace + disc) / 2.0
+    lambda_fast = (trace - disc) / 2.0
+    return -1.0 / lambda_fast, -1.0 / lambda_slow
+
+
+def thermal_time_constant(cfg: dict, n_pax: float | None = None) -> float:
+    """Slow-mode cabin time constant [s] — whole-cabin settling."""
+    return system_time_constants(cfg, n_pax)[1]
+
+
+def air_time_constant(cfg: dict, n_pax: float | None = None) -> float:
+    """Fast-mode air time constant [s] — sharpness of the boarding response."""
+    return system_time_constants(cfg, n_pax)[0]
 
 
 if __name__ == "__main__":
     cfg = load_config()
     n_pax = cfg["occupancy"]["design_load_pax"]
-    tau_s = thermal_time_constant(cfg)
-    print(f"C_eff            : {effective_heat_capacity(cfg) / 1e6:.2f} MJ/K")
+    print(f"C_air            : {air_heat_capacity(cfg) / 1e6:.3f} MJ/K")
+    print(f"C_mass           : {interior_mass_capacity(cfg) / 1e6:.3f} MJ/K")
+    print(f"C_eff            : {effective_heat_capacity(cfg) / 1e6:.3f} MJ/K")
     print(f"UA (envelope)    : {envelope_ua(cfg):.0f} W/K")
     print(f"UA (ventilation) : {ventilation_ua(cfg, n_pax):.0f} W/K  @ {n_pax} pax")
-    print(f"tau_thermal      : {tau_s / 60:.1f} min  (derived, not asserted)")
+    print(f"hA (internal)    : {internal_coupling_ua(cfg):.0f} W/K")
+    print(f"tau_fast (air)   : {air_time_constant(cfg) / 60:.1f} min  (derived)")
+    print(f"tau_slow (cabin) : {thermal_time_constant(cfg) / 60:.1f} min  (derived)")
