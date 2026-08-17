@@ -20,8 +20,8 @@
 # src/config.py:system_time_constants() as the eigenvalues of the two-node
 # state matrix, and tests/test_physics.py checks the simulator against them.
 # They are occupancy-dependent:
-#   empty        tau_fast 1.28 min   tau_slow 56.7 min
-#   design load  tau_fast 1.14 min   tau_slow 45.2 min
+#   empty        tau_fast 1.31 min   tau_slow 97.1 min
+#   design load  tau_fast 1.16 min   tau_slow 77.7 min
 
 vehicle:
   class: mainline_regional          # [EN13129] EN 13129 covers main line rolling stock
@@ -53,8 +53,23 @@ thermal_mass:
   # to it on the timescale we care about (seats, panels, floor, luggage racks).
   air_density_kg_m3: 1.2            # [TYPICAL] Dry air near 20 C
   air_cp_j_kgk: 1005.0              # [TYPICAL] Specific heat of air at constant pressure
-  interior_mass_capacity_j_k: 1.6e+6 # [ASSUMPTION] Dominates over the air term; drives the lag
-                                     # Signed exponent required: PyYAML reads 1.6e6 as a string
+  # Interior mass thermally coupled to the air. Built from a mass budget
+  # rather than guessed:
+  #   80 seats @ 14 kg    x 1400 J/kgK = 1.57 MJ/K
+  #   wall/ceiling panels  900 kg x 1200 = 1.08
+  #   floor + subfloor    1200 kg x  900 = 1.08
+  #   racks, tables, trim  400 kg x  900 = 0.36
+  #   glazing              300 kg x  840 = 0.25
+  #                                 total = 4.34 MJ/K if ALL of it coupled
+  # Not all of it does on a one-hour timescale (deep subfloor, structure
+  # behind panels), so we take ~65% of the budget.
+  #
+  # Sensitivity: varying this over 1.6-4.34 MJ/K moves tau_slow from 45 to
+  # 120 min but changes tau_fast by <3%, the boarding spike by <10%, and
+  # pull-down time not at all. Everything the controller sees is governed by
+  # C_air and hA, not by this value. See tests/test_physics.py.
+  interior_mass_capacity_j_k: 2.8e+6 # [ASSUMPTION] 65% of a 4.34 MJ/K mass budget
+                                     # Signed exponent required: PyYAML reads 2.8e6 as a string
   # C_eff = saloon_volume * air_density * air_cp + interior_mass_capacity
 
   # Air <-> interior-mass coupling. The model uses TWO nodes, not one lumped

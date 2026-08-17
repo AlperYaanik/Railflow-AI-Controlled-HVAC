@@ -89,7 +89,9 @@ C_air  · dT_air/dt  = Q_pass + Q_solar + Q_trans + Q_inf + Q_door + Q_hvac + hA
 C_mass · dT_mass/dt = hA·(T_air − T_mass)
 ```
 
-**Why two nodes rather than one lumped node.** Tested before building, not assumed: lumping the 1.6 MJ/K interior mass into the air node means 68 boarding passengers heat 1.78 MJ/K instead of 0.18 MJ/K. That understates the boarding air-temperature spike by **2× at the end of an 8-minute dwell and 5× in the first two minutes**. Since that spike is the disturbance anticipatory control exists to catch, a single-node model would mute the project's central effect. The extra cost is one parameter (`hA`) and ~30 lines.
+**Why two nodes rather than one lumped node.** Tested before building, not assumed: lumping the interior mass into the air node means 68 boarding passengers heat ~3.0 MJ/K instead of 0.18 MJ/K. Under an **isothermal** boarding test (outdoor equal to cabin start, so passengers are the only forcing), the two-node model gives a **2.25 K** air rise over an 8-minute dwell against **1.13 K** for a single node — 2× at the end of the dwell, 5× in the first two minutes. Since 2.25 K exceeds the ±2 K comfort band while 1.13 K sits inside it, a single-node model would put the project's central disturbance below the threshold worth controlling. The extra cost is one parameter (`hA`) and ~30 lines.
+
+> **A confounded test, caught on review.** The first version of this comparison ran `T_out = 40 °C` against a 24 °C cabin and reported a 9.65 K "boarding spike." At those conditions the outdoor gradient supplied 15.7 kW against the passengers' 4.8 kW — **3.3× more heat than the thing being measured**. The ratio between topologies happened to survive (both models see the same forcing), but the headline number was mostly envelope gain wearing a passenger costume. The isothermal figures above are the honest ones.
 
 | Term | Basis |
 |---|---|
@@ -111,9 +113,13 @@ dT_mass/dt =        hA/C_mass  · T_air − hA/C_mass · T_mass
 
 We assert `C_air`, `C_mass`, `UA`, and `hA` (each individually defensible from geometry and materials); both τ fall out. Every input can be challenged separately, and the answer to "where does that number come from?" is a derivation rather than a guess.
 
-Derived values: **τ_fast ≈ 1.1–1.3 min** (air), **τ_slow ≈ 45–57 min** (whole cabin), varying with occupancy.
+Derived values: **τ_fast ≈ 1.2–1.3 min** (air), **τ_slow ≈ 78–97 min** (whole cabin), varying with occupancy.
 
-> **A shortcut that was tried and rejected.** The familiar single-node form `C_eff / UA` is only valid when `hA ≫ UA`. Here `hA ≈ 1500 W/K` against `UA ≈ 740–1040 W/K`, so it under-reports the slow constant by **29%** (40.2 min against the true 56.7 min when empty). The physics test in M2 caught this by comparing the simulator against the derived value — exactly what that test exists for. The lesson generalises: a derivation is only worth its credibility if something checks it.
+> **A shortcut that was tried and rejected.** The familiar single-node form `C_eff / UA` is only valid when `hA ≫ UA`. Here `hA ≈ 1500 W/K` against `UA ≈ 740–1040 W/K`, so it materially under-reports the slow constant. The physics test in M2 caught this by comparing the simulator against the derived value — exactly what that test exists for. The lesson generalises: a derivation is only worth its credibility if something checks it.
+
+**On the least defensible parameter.** `C_mass` is an `[ASSUMPTION]` built from a mass budget (4.34 MJ/K if every kilogram coupled; we take ~65%). Rather than defend the number, we measured how much it matters: sweeping it across **1.6–4.34 MJ/K** moves τ_slow from 45 to 120 min but changes τ_fast by **<3%**, the boarding spike by **<10%**, and pull-down time **not at all**. Everything the controller sees is governed by `C_air` and `hA`. A regression test locks this in, so the weakest input is demonstrably the one that matters least.
+
+**Sanity against the real world.** `hA` rests on 6 W/m²K, mid-range for indoor natural convection (2–10) and conservative given forced HVAC circulation. Sweeping it 2–15 W/m²K moves τ_fast between 0.6 and 1.9 min — the two-node conclusion holds across the entire plausible range, and *strengthens* at the low end. The 40 kW cooling capacity sits at the top of the commercial range for a single coach (units are typically 23–32 kW, up to ~40 kW for high-capacity stock), which is the right place to be for a 46–48 °C design condition.
 
 The **actuator** lag (`tau_act` — compressor spin-up, damper travel, coil inertia) is genuinely unknown and is handled separately in M6.
 
@@ -124,7 +130,8 @@ The **actuator** lag (`tau_act` — compressor spin-up, damper travel, coil iner
 - **Boarding spike:** 68 passengers over an 8-min dwell move air temperature >5 K, with air leading the interior mass
 - **Actuator:** capacity clamps, dead time delays delivery, the lag converges first-order, and `tau_act = 0` degenerates to instant delivery
 - **Energetics:** COP falls with `T_out` and honours its floor; electrical draw is coil load over COP; zero draw when off
-- **Numerical health:** a 60 s step and six 10 s steps agree within 0.05 K, and state stays finite under extreme forcing
+- **Numerical health:** a genuine convergence study against a 0.25 s reference (the 10 s substep costs 0.017 K over an hour of hard forcing), call-granularity consistency, and finite state under extreme forcing
+- **Robustness:** results are insensitive to `C_mass`, and a single-node model is shown to understate the boarding spike — so the topology choice cannot be silently undone later
 
 The time-constant test is the one that matters most: if the simulator disagrees with the derivation, either the model or the config is wrong. It earned its place immediately — it is what exposed the 29% error in the single-node shortcut.
 

@@ -123,17 +123,83 @@ def test_air_node_responds_much_faster_than_the_cabin(model, cfg):
     assert tau_fast < tau_slow / 5.0, "air node is not meaningfully faster than the mass"
 
 
-def test_boarding_spike_is_visible_in_air_temperature(model):
+def test_boarding_spike_is_visible_in_air_temperature(model, cfg):
     """A large boarding event must move air temperature sharply within a dwell.
 
-    If this fails, the model has smeared out the disturbance that anticipatory
-    control is supposed to catch, and the whole premise is untestable.
+    Deliberately ISOTHERMAL: outdoor temperature equals the starting cabin
+    temperature, so passengers are the only forcing. An earlier version of this
+    test ran T_out = 40 C against a 24 C cabin, where the outdoor gradient
+    contributed 3.3x more heat than the passengers did — it looked like a
+    boarding test but was mostly measuring envelope gain.
+
+    The comfort band half-width is the yardstick: if a boarding event does not
+    move the cabin by at least that much, anticipatory control has nothing to
+    win and the project's premise is untestable.
     """
-    state = model.initial_state(24.0)
-    _, r = run(model, minutes=8, inputs=CabinInputs(t_out_c=40.0, n_pax=68), state=state)
-    rise = r.t_air_c - 24.0
-    assert rise > 5.0, f"boarding spike only {rise:.2f} K — disturbance is too muted"
+    t_amb = 30.0
+    band = cfg["comfort"]["band_k"]
+
+    state = model.initial_state(t_amb)
+    _, r = run(model, minutes=8, inputs=CabinInputs(t_out_c=t_amb, n_pax=68), state=state)
+
+    rise = r.t_air_c - t_amb
+    assert rise > band, (
+        f"boarding raises air only {rise:.2f} K over 8 min, inside the +/-{band} K "
+        "comfort band — the disturbance is too muted to control against"
+    )
     assert r.t_air_c > r.t_mass_c, "air must lead the interior mass during a spike"
+
+
+def test_single_node_would_understate_the_boarding_spike(model, cfg):
+    """Justifies the 2R2C choice, and guards it against being 'simplified' later.
+
+    Same isothermal boarding event, integrated as a single lumped node. If a
+    future change collapses the two nodes into one, this test fails and says
+    why.
+    """
+    from src.config import effective_heat_capacity, envelope_ua, ventilation_ua
+
+    t_amb, n_pax, minutes = 30.0, 68, 8
+    ua = envelope_ua(cfg) + ventilation_ua(cfg, n_pax)
+    q_pax = n_pax * cfg["occupancy"]["sensible_heat_w_per_pax"]
+    c_eff = effective_heat_capacity(cfg)
+
+    t_lumped = t_amb
+    for _ in range(minutes * 60):
+        t_lumped += (q_pax + ua * (t_amb - t_lumped)) / c_eff
+
+    state = model.initial_state(t_amb)
+    _, r = run(model, minutes=minutes, inputs=CabinInputs(t_out_c=t_amb, n_pax=n_pax), state=state)
+
+    two_node_rise = r.t_air_c - t_amb
+    one_node_rise = t_lumped - t_amb
+    assert two_node_rise > 1.5 * one_node_rise, (
+        f"two-node rise {two_node_rise:.2f} K vs single-node {one_node_rise:.2f} K — "
+        "the fast air mode has been lost, which is the whole reason for 2R2C"
+    )
+
+
+def test_results_are_insensitive_to_interior_mass(cfg):
+    """C_mass is our least defensible parameter, so prove it barely matters.
+
+    It is an [ASSUMPTION] built from a mass budget. Varying it across the full
+    plausible range must not move the quantities the controller actually sees.
+    """
+    import copy
+
+    fast, spikes = [], []
+    for c_mass_mj in (1.6, 4.34):
+        c = copy.deepcopy(cfg)
+        c["thermal_mass"]["interior_mass_capacity_j_k"] = c_mass_mj * 1e6
+        m = CabinModel(c)
+        fast.append(air_time_constant(c))
+
+        state = m.initial_state(30.0)
+        _, r = run(m, minutes=8, inputs=CabinInputs(t_out_c=30.0, n_pax=68), state=state)
+        spikes.append(r.t_air_c - 30.0)
+
+    assert abs(fast[1] - fast[0]) / fast[0] < 0.05, "tau_fast should not depend on C_mass"
+    assert abs(spikes[1] - spikes[0]) / spikes[0] < 0.15, "boarding spike should not depend on C_mass"
 
 
 # ----------------------------------------------------------------- actuator
@@ -218,8 +284,14 @@ def test_no_electrical_draw_when_hvac_is_off(model):
 # ------------------------------------------------------------ numerical health
 
 
-def test_substepping_does_not_change_the_answer(model):
-    """A 60 s call and six 10 s calls must agree — proves the substepping works."""
+def test_outer_step_size_does_not_change_the_answer(model):
+    """Bookkeeping check: calling in 60 s chunks must equal calling in 10 s chunks.
+
+    Note what this does NOT test. Both paths integrate internally at
+    SUBSTEP_S, so this cannot detect discretisation error — it only proves the
+    outer/inner loop and the actuator pipeline stay consistent across call
+    granularity. Convergence is tested separately below.
+    """
     inputs = CabinInputs(t_out_c=45.0, n_pax=70, ghi_w_m2=900, q_hvac_cmd_w=-25000.0)
 
     a = model.initial_state(24.0)
@@ -231,6 +303,41 @@ def test_substepping_does_not_change_the_answer(model):
         model.step(b, inputs, dt_s=10.0)
 
     assert a.t_air_c == pytest.approx(b.t_air_c, abs=0.05)
+
+
+def test_integration_has_converged_at_the_chosen_substep(cfg):
+    """The real convergence test: is SUBSTEP_S small enough to be accurate?
+
+    Explicit Euler against a 0.25 s reference over a full hour of hard forcing.
+    The fast mode is ~1.1 min, so this is the step size that matters.
+    """
+    import src.cabin_model as cm
+
+    inputs = CabinInputs(t_out_c=45.0, n_pax=70, ghi_w_m2=900, q_hvac_cmd_w=-25000.0)
+
+    def run_at(substep_s):
+        original = cm.SUBSTEP_S
+        cm.SUBSTEP_S = substep_s
+        try:
+            m = cm.CabinModel(cfg)
+            state = m.initial_state(24.0)
+            for _ in range(60):
+                m.step(state, inputs, dt_s=60.0)
+            return state.t_air_c
+        finally:
+            cm.SUBSTEP_S = original
+
+    reference = run_at(0.25)
+    chosen = run_at(cm.SUBSTEP_S)
+    coarse = run_at(60.0)
+
+    assert abs(chosen - reference) < 0.05, (
+        f"SUBSTEP_S={cm.SUBSTEP_S}s gives {chosen - reference:+.4f} K error vs a 0.25 s reference"
+    )
+    # Sanity: the test can actually detect error, i.e. a bad step size fails it.
+    assert abs(coarse - reference) > abs(chosen - reference), (
+        "a 60 s step should be measurably worse — otherwise this test proves nothing"
+    )
 
 
 def test_state_stays_finite_under_extreme_forcing(model):

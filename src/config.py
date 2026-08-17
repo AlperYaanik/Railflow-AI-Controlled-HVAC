@@ -68,10 +68,9 @@ def system_time_constants(cfg: dict, n_pax: float | None = None) -> tuple[float,
 
     Note on a discarded shortcut: the familiar single-node approximation
     C_eff / UA is only valid when hA >> UA. Here hA is ~1500 W/K against a UA of
-    ~740-1040 W/K, so that shortcut under-reports the slow constant by ~29%
-    (40.2 min against the true 56.7 min when empty). tests/test_physics.py
-    checks the simulator against these exact values, which is how the
-    discrepancy was found.
+    ~740-1040 W/K, so that shortcut materially under-reports the slow constant.
+    tests/test_physics.py checks the simulator against these exact values,
+    which is how the discrepancy was found.
     """
     if n_pax is None:
         n_pax = cfg["occupancy"]["design_load_pax"]
