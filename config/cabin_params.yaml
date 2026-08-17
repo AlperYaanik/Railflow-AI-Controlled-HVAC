@@ -1,0 +1,129 @@
+# Railway cabin HVAC — physical parameters
+#
+# Vehicle class: MAINLINE / REGIONAL (EN 13129 scope)
+# Operating context: Egyptian National Railways, Cairo - Alexandria corridor.
+# Cooling-dominated climate — summer is the design case.
+#
+# SOURCING RULE
+# Every value below carries a [tag] naming where it comes from. This is the
+# project's core credibility requirement: no number appears without a source.
+#
+#   [EN13129]   Stated scope/requirement of EN 13129:2016 (mainline rolling stock)
+#   [UIC553]    UIC leaflet 553-1 (climatic chamber test conditions)
+#   [GEOMETRY]  Computed from the coach dimensions declared in this file
+#   [TYPICAL]   Conventional engineering value for this equipment class
+#   [ASSUMPTION] Our own estimate. These are the values to replace first if
+#                real vehicle data or the paywalled standard becomes available.
+#
+# NOTE: EN 13129:2016 and EN 14750:2024 are paywalled and publish no thermal
+# time constants. Nothing here asserts one. The thermal time constant is
+# DERIVED in src/cabin_model.py as C_eff / (UA + m_dot_fresh * c_p).
+
+vehicle:
+  class: mainline_regional          # [EN13129] EN 13129 covers main line rolling stock
+  description: "Single-deck mainline passenger coach, 2nd class"
+
+geometry:
+  length_m: 26.4                    # [TYPICAL] Standard UIC-profile mainline coach
+  width_m: 2.9                      # [TYPICAL] UIC loading gauge
+  interior_height_m: 2.4            # [TYPICAL] Saloon clear height
+  saloon_volume_m3: 150.0           # [GEOMETRY] Gross envelope less vestibules, toilets, ducting
+  envelope_area_m2: 290.0           # [GEOMETRY] Sides + roof + floor + end walls
+  glazing_area_m2: 22.0             # [GEOMETRY] Side windows, both sides
+
+envelope:
+  # Overall heat transfer coefficient of the car body.
+  u_value_w_m2k: 2.2                # [ASSUMPTION] Modern insulated rail car body, 2.0-2.5 range
+  # UA = envelope_area_m2 * u_value_w_m2k -> computed in code, not hardcoded.
+
+  solar_heat_gain_coefficient: 0.45 # [ASSUMPTION] Tinted/laminated rail glazing
+
+thermal_mass:
+  # Effective heat capacity: cabin air plus the interior mass thermally coupled
+  # to it on the timescale we care about (seats, panels, floor, luggage racks).
+  air_density_kg_m3: 1.2            # [TYPICAL] Dry air near 20 C
+  air_cp_j_kgk: 1005.0              # [TYPICAL] Specific heat of air at constant pressure
+  interior_mass_capacity_j_k: 1.6e+6 # [ASSUMPTION] Dominates over the air term; drives the lag
+                                     # Signed exponent required: PyYAML reads 1.6e6 as a string
+  # C_eff = saloon_volume * air_density * air_cp + interior_mass_capacity
+
+ventilation:
+  fresh_air_m3_h_per_passenger: 15.0 # [ASSUMPTION] EN 13129 mandates a per-passenger fresh
+                                     # air rate; the exact figure is behind the paywall.
+                                     # 15 m3/h/pax is a conventional mainline design value.
+  min_fresh_air_m3_h: 300.0          # [ASSUMPTION] Floor when the coach is near-empty
+
+occupancy:
+  seats: 80                          # [TYPICAL] 2nd class mainline coach
+  design_load_pax: 80                # [EN13129] Design load for main line vehicles is all
+                                     # seats occupied, including tip-up seats and wheelchairs
+  sensible_heat_w_per_pax: 70.0      # [TYPICAL] Seated passenger, light activity
+  latent_heat_w_per_pax: 45.0        # [TYPICAL] Seated passenger, light activity
+
+doors:
+  # Mainline: infrequent stops, so door infiltration matters less than on metro,
+  # but the step at each station is still a real disturbance.
+  air_exchange_m3_per_stop: 120.0    # [ASSUMPTION] Bulk exchange over a full dwell
+
+hvac:
+  cooling_capacity_w: 30000.0        # [TYPICAL] Mainline coach roof/underfloor HVAC unit
+  heating_capacity_w: 25000.0        # [TYPICAL] Same unit in heating mode
+  cop_nominal: 2.8                   # [TYPICAL] Design-point coefficient of performance
+  cop_degradation_per_k: 0.04        # [ASSUMPTION] COP falls as outdoor temperature rises
+  cop_reference_t_out_c: 30.0        # [ASSUMPTION] Reference point for the degradation curve
+  cop_min: 1.2                       # [ASSUMPTION] Floor, so the model stays physical
+
+  # Actuator lag. This is GENUINELY UNKNOWN and is deliberately NOT claimed.
+  # M6 sweeps tau_act over {0, 2, 5, 10, 20} minutes and reports the dependence.
+  # The value here is only the default used for single runs.
+  dead_time_min: 2.0                 # [ASSUMPTION] Compressor spin-up, damper travel
+  tau_act_min: 5.0                   # [ASSUMPTION] SWEPT IN M6 — never presented as fact
+
+comfort:
+  # EN 13129 defines interior temperature as a sliding function of outdoor
+  # temperature rather than a fixed setpoint. This is a simplified version of
+  # that concept, not a reproduction of the standard's curve.
+  setpoint_c: 22.0                   # [ASSUMPTION] Target at moderate outdoor conditions
+  sliding_t_out_low_c: 20.0          # [ASSUMPTION] Below this, setpoint stays at its floor
+  sliding_t_out_high_c: 40.0         # [ASSUMPTION] Above this, setpoint stays at its ceiling
+  sliding_setpoint_low_c: 22.0       # [ASSUMPTION] Setpoint at the low end
+  sliding_setpoint_high_c: 26.0      # [ASSUMPTION] Setpoint at the high end
+  band_k: 2.0                        # [ASSUMPTION] Comfort band half-width, +/- K
+
+simulation:
+  timestep_min: 1                    # [ASSUMPTION] 1-min integration, aggregated to 5 min later
+  control_horizon_min: 30            # [ASSUMPTION] H in the predictive controller
+
+route:
+  # Cairo - Alexandria, the flagship Egyptian National Railways intercity line
+  # (~208 km). Station list and stopping pattern are real; timings and passenger
+  # numbers are representative, not operator data.
+  name: "Cairo - Alexandria intercity"
+  stations:                          # [ASSUMPTION] Timings/loads; station list is real
+    - {name: "Cairo Ramses",   arrive_min: 0,   dwell_min: 8, boarding: 68, alighting: 0}
+    - {name: "Benha",          arrive_min: 45,  dwell_min: 3, boarding: 14, alighting: 9}
+    - {name: "Tanta",          arrive_min: 80,  dwell_min: 4, boarding: 22, alighting: 24}
+    - {name: "Damanhour",      arrive_min: 120, dwell_min: 3, boarding: 11, alighting: 18}
+    - {name: "Sidi Gaber",     arrive_min: 155, dwell_min: 3, boarding: 4,  alighting: 35}
+    - {name: "Alexandria Misr", arrive_min: 165, dwell_min: 0, boarding: 0, alighting: 33}
+
+locations:
+  # Real historical weather, fetched by src/weather.py from the Open-Meteo
+  # Archive API. Egypt is a cooling-dominated climate: the design case is
+  # summer, and heating is close to irrelevant year-round.
+  #
+  # Cairo is the network hub and the realistic operating point. Aswan is the
+  # thermal stress case, approaching the +45 C upper bound of the UIC 553-1
+  # climatic chamber test envelope. [UIC553]
+  - name: cairo
+    latitude: 30.0444
+    longitude: 31.2357
+    seasons:
+      summer: {start: "2024-06-01", end: "2024-08-31"}
+      winter: {start: "2024-01-01", end: "2024-02-29"}
+  - name: aswan
+    latitude: 24.0889
+    longitude: 32.8998
+    seasons:
+      summer: {start: "2024-06-01", end: "2024-08-31"}
+      winter: {start: "2024-01-01", end: "2024-02-29"}
