@@ -65,13 +65,13 @@ The credibility of every downstream number rests here.
 
 **Build:**
 - `config/cabin_params.yaml` — geometry, effective thermal capacity `C_eff`, envelope `UA`, fresh-air rate, HVAC capacity, COP curve, comfort band. **Every value carries a source comment** (EN standard, datasheet, or a stated geometric assumption).
-- `src/weather.py` — real historical weather from the Open-Meteo Archive API (free, no API key): temperature, relative humidity, global horizontal irradiance, wind. One city, two seasons (a summer window and a winter window). Cached to `data/`.
+- `src/weather.py` — real historical weather from the Open-Meteo Archive API (free, no API key): temperature, relative humidity, global horizontal irradiance, wind. Cached to `data/`.
 
-**Open decision — vehicle class.** This changes passenger density, dwell time, and door-event frequency:
-- **Urban / metro (EN 14750)** — *recommended.* Short dwells, high standing density, frequent door cycles. The anticipatory-control effect is far more visible.
-- Mainline / regional (EN 13129) — longer runs, all-seated, fewer stops. The effect is real but slower and less legible in a demo.
+**Decided — vehicle class and operating context.** Mainline / regional (**EN 13129**), Egyptian National Railways, modelled on the Cairo–Alexandria corridor (~208 km, real station list). Long runs, all-seated, few stops. The anticipatory-control effect therefore leans on **large boarding/alighting events at major stations** and on **solar and weather ramps over a long journey**, rather than on frequent door cycles.
 
-*Note: `UIC 553-1` specifies climatic chamber testing at −25 °C and +45 °C — a defensible source for the operating envelope of your scenarios.*
+**Egypt is a cooling-dominated climate**, so summer is the design case and heating is close to irrelevant. Two locations are fetched: **Cairo** (network hub, realistic operating point) and **Aswan** (thermal stress case).
+
+*`UIC 553-1` specifies climatic chamber testing at −25 °C and **+45 °C**. Worth noting: the measured 2024 data reaches **46.4 °C in Cairo and 48.1 °C in Aswan** — real conditions on this corridor exceed the standard's upper test bound. That is a legitimate and quotable observation about why HVAC control margin matters here.*
 
 **Critical rule:** the thermal time constant is **never written into the config**. It is *derived* (see M2).
 
