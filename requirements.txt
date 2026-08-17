@@ -1,0 +1,20 @@
+# Core
+numpy
+pandas
+pyyaml
+
+# Weather data acquisition (Open-Meteo Archive API)
+requests
+
+# Forecasting model
+lightgbm
+
+# Plots and live demo
+matplotlib
+streamlit
+
+# Hardware bridge
+pyserial
+
+# Physics sanity tests
+pytest
