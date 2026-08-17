@@ -8,6 +8,10 @@
 # Every value below carries a [tag] naming where it comes from. This is the
 # project's core credibility requirement: no number appears without a source.
 #
+# WHY each value is what it is -- the sweeps, the rejected alternatives, the
+# calibration priority list and a log of what was got wrong and corrected --
+# is in docs/PARAMETERS.md. Read that before changing anything here.
+#
 #   [EN13129]   Stated scope/requirement of EN 13129:2016 (mainline rolling stock)
 #   [UIC553]    UIC leaflet 553-1 (climatic chamber test conditions)
 #   [GEOMETRY]  Computed from the coach dimensions declared in this file
