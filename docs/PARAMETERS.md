@@ -814,6 +814,68 @@ range, not because of a bias. Corrected here rather than left overstated.
 
 ---
 
+## OPEN RISK FOR M5 — the forecaster's advantage is policy-dependent
+
+Found by testing M4's saved model against a **live**, minute-by-minute
+simulation loop rather than only against the pre-built features table —
+specifically, by driving it with the plain reactive thermostat from M2/M3
+instead of the `StochasticController` it was trained under.
+
+**The headline result (test MAE 3.780 °C vs persistence 4.837 °C, +21.8%) is
+real and reproducible** — confirmed across 3 independently regenerated 30k-row
+datasets with different seeds, improvement 24.4–28.5% each time, all higher
+than the committed dataset's figure. That is not in question.
+
+**What's new:** evaluated live against the M2/M3 reactive thermostat — the
+controller M5 will actually use as its baseline — across 4 scenarios (varied
+date, departure hour):
+
+| Policy | Beats persistence |
+|---|---|
+| `StochasticController` (training distribution) | **4/4 scenarios** |
+| Reactive thermostat (M5's baseline) | **1/4 scenarios** |
+
+Verified this wasn't a bug in the live-reconstruction script before trusting
+it: batch `add_features()` applied to the identical trajectory produces
+*bit-for-bit identical* predictions to the incremental version. The gap is
+real, not a diagnostic error.
+
+**The mechanism, as far as it's actually been established — no further than
+this:** under the reactive thermostat, persistence MAE itself is very low
+(0.7–2.2 °C across the 4 scenarios) — the controller holds `T_air` comparatively
+stable, so "predict no change" is already a strong baseline and there is less
+error left for *any* forecaster to remove. Under the stochastic policy,
+persistence MAE is much higher (4.9–7.7 °C) because the exploration bursts
+create large swings persistence badly fails to predict.
+
+A finer breakdown — whether the model's edge concentrates specifically near
+station disturbances, which would be the tidy story matching this project's
+premise — was tested on one scenario and did **not** cleanly confirm it
+(persistence stayed strong even near a station event in that case, on a small
+20-vs-96-row split). **Recorded as inconclusive rather than stretched into a
+cleaner claim than the evidence supports.**
+
+**Why this doesn't block M5, and what M5 should do about it:**
+
+- M4's own "Done when" criterion (ROADMAP) is about the forecaster in
+  isolation, evaluated the way it was trained — which it satisfies, robustly.
+- M5's actual deliverable is a **controller comparison** (baseline vs
+  predictive), not a standalone forecaster MAE claim. The forecaster only
+  needs to be *useful enough to inform better decisions*, not to minimize MAE
+  against persistence under every possible policy that could generate its
+  input trajectory.
+- **Do not carry the "+21.8% beats persistence" framing into M5's headline
+  result.** That number describes the forecaster's training distribution, not
+  the deployed baseline. M5 needs its own honest measurement of what the
+  predictive controller achieves against the reactive baseline, on the
+  reactive baseline's own trajectories.
+- If M5's predictive controller also disappoints once measured this way, the
+  fix is more likely additional training scenarios generated *under* the
+  reactive policy (closing the distribution gap) than a change to the
+  features or the model class.
+
+---
+
 ## Calibration priority
 
 If real vehicle or operational data ever arrives, replace in this order.

@@ -212,3 +212,81 @@ def test_empty_split_raises_a_clear_error(cfg, require_weather):
         tiny.to_parquet(p)
         with pytest.raises(ValueError, match="split is empty"):
             train_model(cfg, raw_path=p, verbose=False)
+
+
+# ------------------------------------------------ policy-dependence (M5 risk)
+
+
+def test_model_stays_sane_under_a_policy_it_was_not_trained_to_expect(cfg, require_weather):
+    """Regression guard for a real finding, documented in docs/PARAMETERS.md.
+
+    The model was trained mostly under StochasticController's exploration
+    policy (see data_generator.py). Driven LIVE by the plain reactive
+    thermostat instead -- the actual baseline M5 will use -- it beats
+    persistence in only about 1 of 4 scenarios, because persistence itself is
+    a strong baseline once a controller holds T_air fairly stable. That is a
+    scope note for M5 (don't reuse the "+21.8%" figure there), not a defect
+    in M4 to fix here.
+
+    What THIS test pins is narrower and genuinely load-bearing: predictions
+    must stay physically sane under that distribution shift, not silently
+    degrade into nonsense. If this starts failing, something about the
+    feature/model pairing has gotten more fragile than it was when measured.
+    """
+    from src.cabin_model import CabinInputs, CabinModel
+    from src.data_generator import CITIES
+    from src.features import FEATURE_COLUMNS
+    from src.occupancy import Service, simulate
+    from src.train import MODEL_PATH
+    from src.weather import to_minutes
+
+    if not MODEL_PATH.exists():
+        pytest.skip("no saved model. Run:  python -m src.train")
+    import lightgbm as lgb
+
+    booster = lgb.Booster(model_file=str(MODEL_PATH))
+    H = cfg["simulation"]["control_horizon_min"]
+    wx = pd.read_csv(DATA_DIR / f"weather_{CITIES[0]}_summer.csv", parse_dates=["timestamp"])
+
+    model = CabinModel(cfg)
+    service = Service(direction="down", pattern="semi_express", load_factor=1.0)
+    profile = simulate(service, cfg)
+    start = pd.Timestamp("2024-07-20 14:00")
+    w = to_minutes(wx, start, len(profile) + H)
+
+    state = model.initial_state(model.setpoint(float(w["t_out_c"].iloc[0])))
+    rows = []
+    for t in range(len(profile)):
+        t_out = float(w["t_out_c"].iloc[t])
+        setpoint = model.setpoint(t_out)
+        frac = min(1.0, max(0.0, (state.t_air_c - setpoint) / 1.5))
+        r = model.step(state, CabinInputs(
+            t_out_c=t_out, ghi_w_m2=float(w["ghi_w_m2"].iloc[t]),
+            n_pax=profile.n_pax[t], door_open=profile.door_open[t],
+            q_hvac_cmd_w=-model.cooling_capacity_w * frac,
+        ), dt_s=60.0)
+        rows.append({
+            "scenario_id": 0, "city": CITIES[0], "date": start.date(), "depart_hour": 14.0,
+            "direction": service.direction, "pattern": service.pattern,
+            "load_factor": service.load_factor, "minute": t,
+            "t_air_c": r.t_air_c, "t_mass_c": r.t_mass_c, "t_out_c": t_out,
+            "ghi_w_m2": float(w["ghi_w_m2"].iloc[t]), "n_pax": profile.n_pax[t],
+            "door_open": profile.door_open[t],
+            "time_to_next_station_min": profile.time_to_next_station_min[t],
+            "expected_boarding": profile.expected_boarding[t], "setpoint_c": setpoint,
+            "q_hvac_cmd_w": -model.cooling_capacity_w * frac, "q_hvac_actual_w": r.q_hvac_actual_w,
+            "electrical_w": r.electrical_w, "cop": r.cop,
+        })
+
+    raw = pd.DataFrame(rows)
+    feat = add_features(raw, cfg)
+    pred = booster.predict(feat[list(FEATURE_COLUMNS)])
+
+    assert np.isfinite(pred).all()
+    assert (pred > -10).all() and (pred < 60).all()
+    mae = float(np.abs(pred - feat[TARGET_COLUMN]).mean())
+    assert mae < 6.0, (
+        f"MAE {mae:.2f} C under the reactive policy is far outside the "
+        f"0.9-2.7 C range measured when this was characterised -- something "
+        f"has changed, not just the known policy-dependence"
+    )
