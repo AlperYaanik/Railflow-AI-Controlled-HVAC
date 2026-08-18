@@ -15,7 +15,9 @@ build/
 # Large files (don't push data/models to GitHub)
 data/*.csv
 data/*.pkl
+data/*.parquet
 models/*.pt
+models/*.txt
 checkpoints/*.pt
 
 # IDE

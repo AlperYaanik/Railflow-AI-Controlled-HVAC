@@ -1,8 +1,13 @@
-"""Cross-layer compatibility between M1 (config/weather), M2 (cabin) and M3 (occupancy).
+"""Cross-layer compatibility between M1 (config/weather), M2 (cabin), M3
+(occupancy), and M4 (dataset generation / features / training).
 
 The unit tests check each layer in isolation. These check the seams — the places
 where a change in one layer silently invalidates another. Most bugs found so far
-have lived exactly here.
+have lived exactly here. The M4 tests at the bottom of this file specifically tie
+two of M3's documented findings (the EN 13129 design-load case, the Talgo 2027
+express pattern) forward into what the dataset generator actually produces --
+guarding against the scenario catalogue silently drifting out of sync with the
+milestone that established why those cases matter.
 """
 
 import pandas as pd
@@ -321,3 +326,83 @@ def test_energy_decomposition_is_monotonic(cfg, model, weather):
     assert both >= energy_kwh(True, False) - 1e-6
     assert both >= energy_kwh(False, True) - 1e-6
     assert energy_kwh(False, False) <= min(energy_kwh(True, False), energy_kwh(False, True))
+
+
+# ------------------------------------------------------- M4 cross-layer checks
+
+
+def test_m4_default_horizon_still_covers_the_actuator_delay(cfg):
+    """M4's forecaster target horizon is add_features()'s default, which reads
+    cfg['simulation']['control_horizon_min'] -- the same value already checked
+    against actuator dynamics in test_m4_default_horizon_still_covers_the_
+    actuator_delay's sibling above (M1<->M2). This test ties M4's actual
+    wiring back to that same config value, so a future change to how M4 picks
+    its horizon can't silently drift away from the invariant M1-M3 already
+    established.
+    """
+    from src.features import add_features
+
+    horizon = cfg["simulation"]["control_horizon_min"]
+    hv = cfg["hvac"]
+    assert horizon >= hv["dead_time_min"] + 3 * hv["tau_act_min"]
+
+    # And add_features() must actually use this value by default, not some
+    # independent hardcoded number.
+    tiny = pd.DataFrame({
+        "scenario_id": 0, "city": "cairo", "date": pd.Timestamp("2024-07-01").date(),
+        "depart_hour": 8.0, "direction": "down", "pattern": "semi_express", "load_factor": 1.0,
+        "minute": range(60),
+        "t_air_c": 26.0, "t_mass_c": 26.0, "t_out_c": 35.0, "ghi_w_m2": 400.0,
+        "n_pax": 30, "door_open": False, "time_to_next_station_min": 20,
+        "expected_boarding": 5, "setpoint_c": 26.0,
+        "q_hvac_cmd_w": 0.0, "q_hvac_actual_w": 0.0, "electrical_w": 0.0, "cop": 2.5,
+    })
+    feat = add_features(tiny, cfg)
+    assert feat.attrs["horizon_min"] == horizon
+
+
+def test_generated_dataset_includes_the_en13129_design_load_case(cfg, require_weather):
+    """Carries M3's finding forward: load factor 1.1 is the point where the
+    route peaks at exactly 80 passengers, the EN 13129 mainline design load
+    (all seats occupied). Without it in the training data, the model never
+    sees the standard's own worst case -- exactly the gap M3 found and fixed
+    in the occupancy layer. This confirms the dataset generator didn't quietly
+    stop sampling it.
+    """
+    from src.data_generator import LOAD_FACTORS, generate_dataset
+
+    assert 1.1 in LOAD_FACTORS, "the design-load factor was removed from the catalogue"
+
+    data = generate_dataset(cfg, target_rows=8000, seed=7)
+    scenarios = data.drop_duplicates("scenario_id")
+    assert (scenarios["load_factor"] == 1.1).any(), (
+        "no generated scenario used load_factor=1.1 in this sample -- with "
+        "enough rows this should not happen by chance"
+    )
+
+
+def test_generated_dataset_includes_both_stopping_patterns(cfg, require_weather):
+    """Carries M3's other finding forward: the express pattern (real Talgo
+    2027 stops: Cairo, Sidi Gaber, Alexandria) uses 8.9% less energy than the
+    semi-express and stops the model from assuming a fixed journey length.
+    """
+    from src.data_generator import PATTERNS, generate_dataset
+
+    assert set(PATTERNS) == {"semi_express", "express"}
+
+    data = generate_dataset(cfg, target_rows=8000, seed=7)
+    scenarios = data.drop_duplicates("scenario_id")
+    patterns_seen = set(scenarios["pattern"].unique())
+    assert patterns_seen == {"semi_express", "express"}, (
+        f"only {patterns_seen} appeared -- one stopping pattern is missing "
+        "from a sample this size"
+    )
+
+    # And they must actually produce different journey lengths, which is the
+    # whole reason both are in the catalogue rather than picking one.
+    lengths = data.groupby("scenario_id").agg(pattern=("pattern", "first"), n=("minute", "size"))
+    express_len = lengths.loc[lengths.pattern == "express", "n"]
+    semi_len = lengths.loc[lengths.pattern == "semi_express", "n"]
+    assert express_len.max() < semi_len.min(), (
+        "express journeys should always be shorter than semi-express ones"
+    )
