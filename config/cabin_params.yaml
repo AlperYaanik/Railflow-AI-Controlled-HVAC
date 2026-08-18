@@ -25,7 +25,10 @@
 # state matrix, and tests/test_physics.py checks the simulator against them.
 # They are occupancy-dependent:
 #   empty        tau_fast 1.31 min   tau_slow 97.1 min
-#   design load  tau_fast 1.16 min   tau_slow 77.7 min
+#   design load  tau_fast 1.10 min   tau_slow 72.3 min
+# (design load recomputed after ventilation.fresh_air_m3_h_per_passenger
+# was corrected 15->20; empty is unaffected -- see that value's note, the
+# per-passenger rate doesn't apply below min_fresh_air_m3_h's floor)
 
 vehicle:
   class: mainline_regional          # [EN13129] EN 13129 covers main line rolling stock
@@ -85,9 +88,20 @@ thermal_mass:
   # hA_internal = interior_surface_area_m2 * internal_h_w_m2k
 
 ventilation:
-  fresh_air_m3_h_per_passenger: 15.0 # [ASSUMPTION] EN 13129 mandates a per-passenger fresh
-                                     # air rate; the exact figure is behind the paywall.
-                                     # 15 m3/h/pax is a conventional mainline design value.
+  # [TYPICAL, upgraded from ASSUMPTION] EN 13129:2016 Table 11 (via a real
+  # climate chamber test report, not the paywalled standard itself): 20
+  # m3/h/passenger is the NORMAL/standard rate; 15 and 10 m3/h/pax are
+  # explicitly the REDUCED rate for extreme conditions the report doesn't
+  # define further. Was 15.0 here -- the reduced figure, not the standard
+  # one; corrected once the real source distinguished the two. This raises
+  # ventilation_ua() and therefore both derived time constants (tau_fast,
+  # tau_slow -- see the header note above and src/config.py); it also
+  # displaces an earlier cross-check against a DIFFERENT source's "1200
+  # m3/h for an 80-pax, 24 m coach", which matched 15 x 80 exactly and no
+  # longer matches 20 x 80 = 1600. That source didn't label which
+  # condition it was describing -- flagged as open, not silently resolved,
+  # since it may itself have meant the reduced case. See docs/PARAMETERS.md.
+  fresh_air_m3_h_per_passenger: 20.0
   min_fresh_air_m3_h: 300.0          # [ASSUMPTION] Floor when the coach is near-empty
 
 occupancy:
@@ -156,11 +170,21 @@ hvac:
   # which would have made any controller comparison a straw man.
   #
   # Rail HVAC supplies 20-30% outside air at design conditions. Fresh air at
-  # design load is 15 m3/h/pax x 80 = 1200 m3/h, which at ~25% implies a total
-  # supply of ~4800 m3/h. An independent source quotes exactly 1200 m3/h for a
-  # 24 m intercity coach with 80 passengers at +45 C, which is a genuine
-  # cross-check on the fresh-air figure.
-  supply_air_m3_h: 4800.0            # [TYPICAL] Fresh air / 0.25 outside-air fraction
+  # design load is now 20 m3/h/pax x 80 = 1600 m3/h (see ventilation.
+  # fresh_air_m3_h_per_passenger's note on the standard-vs-reduced correction),
+  # which at ~25% implies a total supply of ~6400 m3/h.
+  #
+  # This DISPLACES the previous cross-check here: a different independent
+  # source quoted exactly 1200 m3/h for a 24 m, 80-passenger intercity coach
+  # at +45 C, which matched the OLD 15 m3/h/pax figure exactly (15 x 80 =
+  # 1200) and no longer matches 20 x 80 = 1600. Not silently dropped: that
+  # source never labelled which EN 13129 condition (standard or reduced) it
+  # was describing, so the mismatch is left open rather than resolved either
+  # way. If it turns out that source meant the reduced condition too, both
+  # numbers are consistent; if it meant standard, one of the two sources is
+  # wrong about this specific vehicle class. Worth another look if time
+  # allows, not urgent enough to block on.
+  supply_air_m3_h: 6400.0            # [TYPICAL] Fresh air / 0.25 outside-air fraction
   supply_air_min_temp_c: 10.0        # [ASSUMPTION] Coil limit; colder risks frost and
                                      # draught complaints
   supply_air_max_temp_c: 45.0        # [ASSUMPTION] Heating-side equivalent
