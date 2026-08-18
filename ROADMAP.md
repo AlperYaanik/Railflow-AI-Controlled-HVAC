@@ -187,12 +187,35 @@ The **express** pattern follows the real **Talgo 2027** service — Cairo, Sidi 
 Departure hour was not on any list of known issues and turns out to dominate everything else — ENR runs 37 trains daily between 04:00 and 23:00, so the whole range is real service. A model trained only on morning departures would miss most of the problem.
 
 *This also settles a deferred question: tying load factor to time of day is **not worth building**, because departure hour already carries a 4× larger effect through solar and outdoor temperature.*
-- `src/features.py` — lagged commands `u(t-1..t-k)`, command EWMA (half-life ≈ τ), cyclical time encoding, and the **lookahead features that are the entire point**: time to next station, expected boarding count, and the +30 min weather outlook.
-- `src/train.py` — LightGBM predicting `T_in` at a single horizon `t+H`, where `H` is the control horizon.
 
-**Non-negotiable:** **chronological** train/validation/test split. A random split leaks future information through the lag features and produces a meaningless score.
+**Built:**
+- `src/data_generator.py` — random scenario sampling (not a fixed grid) across departure hour × city × day × load factor × pattern × direction, until ~30k rows. **Winter is excluded** — a scope decision, not an oversight: Egypt is cooling-dominated and heating essentially never engages at realistic occupancy even with the M2 heating-COP fix in place. The controller commanding HVAC during generation is deliberately **not** the reactive thermostat used for evaluation — a `StochasticController` spends most minutes in a proportional-to-error mode (randomised aggressiveness per scenario) but periodically forces full-power, off, or a random fixed level for a few minutes at a time. This is standard system-identification practice: a model trained on one policy's closed-loop trajectory has little independent (state, command) variation to learn the plant's response from.
+- `src/features.py` — command lags (1–20 min) and an EWMA (half-life = `tau_act_min`) of *delivered* power (`q_hvac_actual_w`, not the raw command — the physically causal driver), cyclical hour-of-day, current state, and the lookahead features: time to next station, expected boarding, and weather **30 minutes ahead** pulled from the scenario's own future trajectory (legitimate because weather is exogenous and known in advance — forecasting it is a different, solved problem this project isn't attempting). Every lag/shift/EWMA operation is grouped by `scenario_id` so nothing bleeds across journeys.
+- `src/train.py` — LightGBM (native `Dataset`/`train` API, not the sklearn wrapper, to avoid pulling in scikit-learn as a dependency), predicting `T_air` at `t+H` where `H = simulation.control_horizon_min` (30 min), read from config rather than hardcoded.
 
-**Done when:** test MAE beats a persistence baseline (`T_in(t+H) = T_in(t)`). If it does not, the lookahead features are not wired in correctly — that is the first place to look.
+**Non-negotiable, and implemented as stated:** chronological split **by calendar date**, not by row and not by scenario. Dates are sorted and partitioned 70/15/15 into train/val/test, so a given day's weather can never appear on both sides of the split — the leak a random split would produce, since lag features span up to 20 minutes and the target itself is only 30 minutes ahead of the current row.
+
+**Done when:** test MAE beats the persistence baseline. **It does, on genuinely held-out future dates:**
+
+| Split | Dates | Model MAE | Persistence MAE | Improvement |
+|---|---|---|---|---|
+| Train | 54 | 3.451 °C | 5.023 °C | +31.3% |
+| Val | 12 | 3.374 °C | 5.114 °C | +34.0% |
+| **Test** | **11** | **3.780 °C** | **4.837 °C** | **+21.8%** |
+
+The improvement is smaller on test than train/val — an honest generalisation gap that a random split would have hidden, not a red flag: test isn't hotter or harder by any measure checked (T_out and persistence-MAE are actually slightly *easier* on test), so this reads as ordinary date-to-date variance across a modest 11-day sample, worth knowing rather than averaging away.
+
+**Is the model doing more than tracking the weather forecast?** `t_out_fcst_h` dominates feature importance by a wide margin (gain 13027, next-highest 3490) — physically sensible, since outdoor temperature is the dominant 30-minute-ahead driver in a cooling-dominated climate. Checked rather than assumed: a closed-form linear fit on `t_out_fcst_h` alone gets test MAE 4.019 °C; the full model reaches 3.780 °C, a further **5.9% on top of weather alone**. Smaller than the margin over persistence, but real, and it's the actual evidence behind this project's timetable-anticipatory premise — without it, "occupancy and timetable features help" would be an assertion, not a finding.
+
+> **What M4 found — two bugs, one in the new code, one in the environment.**
+>
+> **A sign inversion in the exploration policy.** The reactive control mode computed `err = t_air_c − setpoint`, positive when the cabin is too *hot* — and the dispatch sent positive fractions to *heating*. So the "realistic" mode fought overheating with heat, for 57.6% of rows in the first generated dataset. Not caught by a crash: caught by checking the command-mode distribution against the configured weights (full_heat should have been ~5%, not 58%) and by `cooling_energy > heating_energy` failing on a cooling-dominated climate. Fixed to `err = setpoint − t_air_c`; both directions now have dedicated regression tests (`test_reactive_mode_cools_when_hot`, `test_reactive_mode_heats_when_cold`).
+>
+> **A native crash from a pandas/LightGBM import-order conflict.** `lgb.Dataset(...).construct()` died with an access violation deep in `LGBM_DatasetSetField` — a hard native crash, not a catchable Python exception. Root-caused rather than worked around blindly: bisection (shape, dtype, contiguity, ownership, value range, value order — all ruled out one at a time) eventually isolated it to **import order** — `import pandas` with pandas never subsequently used, followed by `import lightgbm` and one `Dataset.construct()` call on a random array, reproduces the crash on this Windows environment every time; reversing the order avoids it completely. Fixed in `src/train.py` (`lightgbm` imported first) and in `tests/conftest.py` (forced session-wide, since pytest could otherwise import a pandas-using test file before `test_train.py`). Worth knowing for the 22 August handoff: whoever runs this on their own machine may need the same fix if they hit the same crash.
+
+**Cross-layer tests.** `tests/test_integration.py` ties two of M3's findings forward into what the generator actually produces — the EN 13129 design-load case (`load_factor=1.1`) and both stopping patterns are asserted present in a real generated sample, not just assumed to still be there — plus a wiring check that M4's forecast horizon is actually read from config rather than a second hardcoded value drifting away from the dead-time/`tau_act` invariant M1–M3 already established.
+
+**Tests: 175 → 178** (39 new: 17 in `test_data_generator.py`, 14 in `test_features.py`, 11 in `test_train.py`, minus overlap, plus 3 appended to `test_integration.py`). Verified on a fresh clone with no `data/` at all: every M4 test now skips with an actionable message (`Run: python -m src.weather`) instead of a raw `FileNotFoundError` — the same gap M0 fixed for notebooks and M3 fixed for the weather-dependent integration tests, recurring here because `data_generator.py` sits one layer deeper than what those earlier fixes covered.
 
 ---
 
