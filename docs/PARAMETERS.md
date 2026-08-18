@@ -379,6 +379,42 @@ correctness check on the formula itself: it must degenerate to plain
 proportional feedback exactly, verified against a hand-computed value, not
 just "run without crashing."
 
+**A deadband was added after the M5 headline comparison first came back
+negative.** Running `AnticipatoryController` against `ThermostatController`
+across the M4 test split (`src/compare_controllers.py`), the anticipatory
+controller used *more* energy on 15/23 scenarios and was strictly worse on
+both energy and comfort on 6/23. Diagnosed on the canonical scenario, not
+guessed: `ThermostatController` is fully off 32.5% of the time; the raw
+proportional law (no floor) was off only 0.6% of the time. With no deadband,
+`raw` (the blended feedforward/feedback error) is essentially never exactly
+zero — continuous solar gain, fresh-air load and passenger heat keep it
+slightly nonzero almost always — so the controller pays continuous low-power
+compressor cost that bang-bang's real off-periods simply don't. Fixed by
+zeroing `raw` below `thermostat_hysteresis_k / 2` (reusing the baseline's own
+sourced switching tolerance rather than inventing a second unsourced number),
+applied as a continuous shrink-to-zero — `excess = |raw| − half_band`, zero
+below it, `sign(raw) · excess` above — specifically to avoid a hard on/off
+jump reintroducing the chattering `ThermostatController` hit the first time
+dual-mode hysteresis was tried on this plant (see above). Validated on the
+**val split** before the test split was re-run: mean energy saving
+−4.5%→+3.4%, dominated scenarios (worse on both) 6/23→0/31. Confirmed once
+on the test split for the actual headline number — see ROADMAP.md's M5
+section for the full result and the honest caveat that total degree-hours is
+not improved in aggregate.
+
+**A follow-up ablation quantifies what the feedforward term (`ff_weight`)
+itself buys.** `src/compare_controllers.py`'s `compare_feedforward_contribution()`
+compares the shipped controller against the identical controller/deadband
+with `ff_weight` forced to 0 (pure proportional feedback, no M4 forecast).
+On the same 23 test-split scenarios: the forecast costs 6.2% more energy on
+average but cuts total degree-hours 60.47→22.86 K·h (23/23 scenarios
+equal-or-better). This is the cleanest result in the milestone and it
+directly supports the design choice above ("why feedforward alone isn't
+used" applies in reverse here too: pure feedback alone isn't the free
+option either — it is measurably worse on comfort). **Not a PID comparison**
+— `ff_weight=0` has no integral or derivative term, so do not present it as
+one.
+
 ### Cooling capacity — raised from 30 kW during the M1 audit
 
 30 kW is a normal European coach figure, and it **saturated** against Egyptian
@@ -1002,3 +1038,5 @@ more than the final numbers.
 | `AnticipatoryController`'s error sign | `current_error = t_air_c − setpoint_c` (positive when hot) fed a dispatch built for negative-when-hot — the identical class of bug already fixed once in `data_generator.py`'s `StochasticController`. Fixing only this produced no visible change in testing | Flipped to `setpoint − t_air_c`. But see the next row — this fix alone was not sufficient, and its apparent no-op was itself a symptom worth recording |
 | `AnticipatoryController`'s dispatch line | A second, independent sign bug: `-cooling_capacity_w * frac` instead of `frac * cooling_capacity_w`, given `frac` is already signed. This one was masking the error-sign fix directly above — two bugs stacked to look like "the fix did nothing," found by tracing `frac` and the delivered command minute by minute rather than trusting an unchanged aggregate result | Corrected to `frac * capacity`, matching the already-correct pattern in `data_generator.py`. A 46 °C-adjacent day that had ended at 43 °C (fighting itself with heat) now ends at 24.9 °C |
 | `ThermostatController` run dual-mode | Heat below the lower threshold, cool above the upper one — what a generic thermostat does. Oscillated between full heat and full cool 18 times in 166 minutes, `T_air` swinging 21.8–30 °C, because this cabin's fast air node (`τ_fast` ≈ 1.1–1.3 min) overshoots the opposite threshold before the actuator's dead-time/lag can respond | Made cooling-only, matching every other baseline already built in this project and the documented cooling-dominated climate |
+| `evaluate.run_controller`'s journey start time used `int(depart_hour * 60)` | `data_generator.py` uses `round(...)` for the same computation — a real cross-file inconsistency (up to 1 minute), found while auditing M1–M5 compatibility before trusting the M5 headline number. Harmless in practice (weather is interpolated and slowly varying), but a genuine divergence, not just style | Changed to `round(...)`, matching `data_generator.py` |
+| `AnticipatoryController`'s first M5 headline run | Used *more* energy than `ThermostatController` on 15/23 test-split scenarios, strictly worse on both energy and comfort on 6/23. Root cause: the proportional law had no floor, so it was fully off only 0.6% of minutes vs the baseline's 32.5% — continuous low-power modulation costing more than the baseline's real off-periods | Added a deadband reusing `thermostat_hysteresis_k` (no new unsourced number), applied continuously to avoid reintroducing chattering. Validated on the val split (−4.5%→+3.4% mean saving, 6/23→0/31 dominated) before confirming once on test (+3.9% mean, 0/23 dominated) |
