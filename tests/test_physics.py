@@ -229,14 +229,87 @@ def test_dead_time_delays_the_response(model):
 
 
 def test_actuator_lag_is_first_order(model):
-    """After the dead time, delivered power approaches the command exponentially."""
-    cmd = -20000.0
+    """Delivered power converges to the command, when the air stream can carry it.
+
+    The command is kept modest on purpose: a large one would be clipped by the
+    supply-air limit as the cabin cooled, and this test is about the lag, not
+    about the clamp.
+    """
+    cmd = -8000.0
     state = model.initial_state(30.0)
     inputs = CabinInputs(t_out_c=40.0, q_hvac_cmd_w=cmd)
 
     for _ in range(200):
         r = model.step(state, inputs, dt_s=60.0)
+
+    assert abs(cmd) < abs(model.deliverable_cooling_w(state.t_air_c)), (
+        "test setup invalid: the supply-air limit is binding, so this is not "
+        "measuring the lag"
+    )
     assert r.q_hvac_actual_w == pytest.approx(cmd, rel=0.02), "never converged to the command"
+
+
+# ---------------------------------------------------------------- supply air
+
+
+def test_cooling_is_limited_by_the_supply_air_stream(model):
+    """Rated capacity is not deliverable unless the air stream can carry it."""
+    hot = model.deliverable_cooling_w(35.0)
+    mild = model.deliverable_cooling_w(24.0)
+    assert abs(mild) < abs(hot), "cooling authority must shrink as the cabin cools"
+    assert abs(hot) <= model.cooling_capacity_w + 1e-6
+
+
+def test_cooling_authority_vanishes_at_supply_temperature(model):
+    """At supply temperature the stream can do nothing more."""
+    assert model.deliverable_cooling_w(model.supply_min_c) == pytest.approx(0.0)
+    assert model.deliverable_cooling_w(model.supply_min_c - 5.0) == pytest.approx(0.0)
+
+
+def test_cabin_cannot_be_cooled_below_supply_temperature(model):
+    """The physical floor. Without it the model cools without bound.
+
+    Commanding maximum cooling forever previously drove the air node far below
+    anything a coil could produce, which is what let a bang-bang baseline
+    oscillate for a numerical rather than a physical reason.
+    """
+    state = model.initial_state(40.0)
+    for _ in range(600):
+        model.step(state, CabinInputs(t_out_c=45.0, q_hvac_cmd_w=-1e6), dt_s=60.0)
+    assert state.t_air_c >= model.supply_min_c - 0.5
+
+
+def test_delivered_power_is_clamped_as_the_cabin_cools(model):
+    """The lag state must not keep delivering power the stream can no longer carry.
+
+    Bounded against the temperature at the START of each step. While cooling,
+    temperature falls monotonically through the step and the limit falls with
+    it, so the start-of-step limit is the largest value any substep could
+    legitimately have used.
+    """
+    state = model.initial_state(38.0)
+    inputs = CabinInputs(t_out_c=42.0, q_hvac_cmd_w=-model.cooling_capacity_w)
+
+    for _ in range(400):
+        limit_at_start = abs(model.deliverable_cooling_w(state.t_air_c))
+        r = model.step(state, inputs, dt_s=60.0)
+        assert abs(r.q_hvac_actual_w) <= limit_at_start + 1.0
+
+
+def test_pulldown_is_faster_from_a_hotter_cabin(model):
+    """A hot cabin has more cooling authority, so early pull-down is quicker.
+
+    This is the behaviour that makes the limit worth modelling: authority is
+    state-dependent, so a controller cannot assume full capacity is always on
+    tap near setpoint.
+    """
+    def drop_over(minutes, t_start):
+        state = model.initial_state(t_start)
+        for _ in range(minutes):
+            model.step(state, CabinInputs(t_out_c=45.0, q_hvac_cmd_w=-1e6), dt_s=60.0)
+        return t_start - state.t_air_c
+
+    assert drop_over(5, 40.0) > drop_over(5, 27.0)
 
 
 def test_zero_tau_act_removes_the_lag(cfg):

@@ -107,19 +107,26 @@ class CabinModel:
         self.pax_sensible_w = occ["sensible_heat_w_per_pax"]
         self.pax_latent_w = occ["latent_heat_w_per_pax"]
 
+        tm = self.cfg["thermal_mass"]
+        rho_cp = tm["air_density_kg_m3"] * tm["air_cp_j_kgk"]
+
         hv = self.cfg["hvac"]
         self.cooling_capacity_w = hv["cooling_capacity_w"]
         self.heating_capacity_w = hv["heating_capacity_w"]
         self.dead_time_s = hv["dead_time_min"] * 60.0
         self.tau_act_s = hv["tau_act_min"] * 60.0
 
+        # Supply-air path: rated capacity is only reachable if the air stream
+        # can carry it. See config for the derivation of these figures.
+        self.supply_ua = hv["supply_air_m3_h"] / 3600.0 * rho_cp
+        self.supply_min_c = hv["supply_air_min_temp_c"]
+        self.supply_max_c = hv["supply_air_max_temp_c"]
+
         # Door infiltration, as a rate while the door is open. Deliberately
         # independent of the timetable: how fast air crosses an open doorway is
         # a property of the doorway, not of how long the train is scheduled to
         # sit there. Total exchange per stop then follows from the dwell length.
-        tm = self.cfg["thermal_mass"]
-        m3_per_s = self.cfg["doors"]["air_exchange_m3_per_min"] / 60.0
-        self.door_ua = m3_per_s * tm["air_density_kg_m3"] * tm["air_cp_j_kgk"]
+        self.door_ua = self.cfg["doors"]["air_exchange_m3_per_min"] / 60.0 * rho_cp
 
     # ---------------------------------------------------------------- helpers
 
@@ -149,12 +156,32 @@ class CabinModel:
             return s_hi
         return s_lo + (s_hi - s_lo) * (t_out_c - lo) / (hi - lo)
 
+    def deliverable_cooling_w(self, t_air_c: float) -> float:
+        """Most sensible cooling the supply air stream can deliver right now [W, negative].
+
+        Bounded by two independent things: what the coil can produce (rated
+        capacity) and what the air stream can carry at its coldest allowed
+        supply temperature. The second shrinks to zero as the cabin approaches
+        supply temperature, which is what stops the model from cooling the
+        cabin arbitrarily fast or below the coil temperature.
+        """
+        air_side = self.supply_ua * max(0.0, t_air_c - self.supply_min_c)
+        return -min(self.cooling_capacity_w, air_side)
+
+    def deliverable_heating_w(self, t_air_c: float) -> float:
+        """Most sensible heating the supply air stream can deliver right now [W]."""
+        air_side = self.supply_ua * max(0.0, self.supply_max_c - t_air_c)
+        return min(self.heating_capacity_w, air_side)
+
     def _actuate(self, state: CabinState, q_cmd_w: float, dt_s: float) -> float:
-        """Dead time, then first-order lag, then capacity clamp.
+        """Dead time, then first-order lag, then the supply-air capacity clamp.
 
         Returns delivered thermal power [W].
         """
-        q_cmd_w = min(max(q_cmd_w, -self.cooling_capacity_w), self.heating_capacity_w)
+        q_cmd_w = min(
+            max(q_cmd_w, self.deliverable_cooling_w(state.t_air_c)),
+            self.deliverable_heating_w(state.t_air_c),
+        )
 
         # Transport delay: a FIFO exactly `depth` substeps deep. Pre-filling it
         # with zeros means a fresh run delivers nothing until the dead time has
@@ -173,6 +200,15 @@ class CabinModel:
         else:
             alpha = dt_s / self.tau_act_s
             state.q_hvac_actual_w += alpha * (q_delayed - state.q_hvac_actual_w)
+
+        # Clamp the OUTPUT too, not only the command. The lag state carries the
+        # old command forward, so a unit that was cooling hard while the cabin
+        # was hot would keep delivering that power as the cabin cooled and the
+        # air stream could no longer support it.
+        state.q_hvac_actual_w = min(
+            max(state.q_hvac_actual_w, self.deliverable_cooling_w(state.t_air_c)),
+            self.deliverable_heating_w(state.t_air_c),
+        )
         return state.q_hvac_actual_w
 
     # ------------------------------------------------------------------ step
