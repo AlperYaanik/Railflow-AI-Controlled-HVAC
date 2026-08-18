@@ -32,12 +32,25 @@ def model(cfg):
 
 @pytest.fixture(scope="module")
 def weather():
+    """Cached weather, or skip.
+
+    data/ is gitignored because the CSVs are regenerable, so a fresh clone has
+    none. Skipping with an actionable message beats failing with a KeyError —
+    this is the first thing anyone cloning the repo will hit.
+    """
     frames = {}
     for city in ("cairo", "aswan"):
         for season in ("summer", "winter"):
             path = DATA_DIR / f"weather_{city}_{season}.csv"
             if path.exists():
                 frames[(city, season)] = pd.read_csv(path, parse_dates=["timestamp"])
+
+    required = [("cairo", "summer"), ("aswan", "summer")]
+    missing = [k for k in required if k not in frames]
+    if missing:
+        pytest.skip(
+            f"weather cache missing {missing}. Run:  python -m src.weather"
+        )
     return frames
 
 
