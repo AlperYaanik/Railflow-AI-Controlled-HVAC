@@ -100,17 +100,23 @@ def test_never_negative():
 
 
 def test_run_controller_matches_the_manually_traced_reference(cfg, require_weather):
-    """Locks in the numbers this file's own __main__ block reported when
-    evaluate.py was first written and cross-checked by hand: energy 26.75 kWh,
-    mean error +0.58 K, worst excursion 4.79 K, on the same fixed scenario
-    used throughout M5's development. A silent regression in run_controller
-    or score() should move these.
+    """Locks in the numbers this file's own __main__ block reports, on the
+    same fixed scenario used throughout M5's development. A silent
+    regression in run_controller or score() should move these.
+
+    Updated to 30.86 kWh / +0.47 K / 5.06 K after
+    ventilation.fresh_air_m3_h_per_passenger was corrected 15->20 (the real
+    EN 13129 standard rate, not the reduced one -- see cabin_params.yaml).
+    More fresh air is a real physical change (more ventilation heat load in
+    a hot climate), so this test moving is the test doing its job, not a
+    bug -- the original 26.75/0.58/4.79 reference is in git history if ever
+    needed for comparison.
     """
     traj = run_controller(lambda model: ThermostatController(model), cfg)
     result = score(traj, cfg)
-    assert result.energy_kwh == pytest.approx(26.75, abs=0.1)
-    assert result.mean_err_k == pytest.approx(0.58, abs=0.05)
-    assert result.worst_excursion_k == pytest.approx(4.79, abs=0.1)
+    assert result.energy_kwh == pytest.approx(30.86, abs=0.1)
+    assert result.mean_err_k == pytest.approx(0.47, abs=0.05)
+    assert result.worst_excursion_k == pytest.approx(5.06, abs=0.1)
     assert result.minutes == len(traj)
 
 

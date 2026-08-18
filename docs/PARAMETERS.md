@@ -152,18 +152,43 @@ presentation should not claim that it is.
 
 | Parameter | Value | Confidence |
 |---|---|---|
-| `fresh_air_m3_h_per_passenger` | 15.0 | Low |
+| `fresh_air_m3_h_per_passenger` | 20.0 | **Medium — upgraded from Low** |
 | `min_fresh_air_m3_h` | 300.0 | Low |
 
-EN 13129 mandates a per-passenger fresh air rate but **the figure is behind the
-paywall**, so this is tagged `[ASSUMPTION]` rather than dressed up as
-standards-derived. 15 m³/h/pax is a conventional mainline design value.
+**Corrected 15→20.** EN 13129 mandates a per-passenger fresh air rate but the
+standard itself is still paywalled; this is no longer a bare guess, though —
+a real climate chamber test report (Section 4.3, citing the standard's Table
+11 directly) gives **20 m³/h/pax as the NORMAL/standard rate**, with 15 and 10
+m³/h/pax explicitly labelled as the REDUCED rate for extreme conditions the
+report doesn't define further. The 15.0 previously here was the *reduced*
+figure, not the standard one — tagged `[TYPICAL]` now rather than
+`[ASSUMPTION]`, since it traces to an actual cited table rather than "a
+conventional mainline design value" with no citation. Still not `[EN13129]`
+outright: this is a secondary source quoting the standard's table, not the
+standard itself.
 
-The 300 m³/h floor keeps a near-empty coach ventilated; it binds below 20
-passengers, which is why τ is identical at 0 and 20 pax.
+This displaces an earlier cross-check: a different independent source quoted
+exactly 1200 m³/h for a 24 m, 80-passenger intercity coach at +45 °C, which
+matched 15 × 80 = 1200 exactly and no longer matches 20 × 80 = 1600. That
+source never labelled which EN 13129 condition (standard or reduced) it was
+describing — left open, not resolved either way; worth another look if time
+allows, not urgent enough to block on.
 
-At design load: `1200 m³/h → 0.4 kg/s → UA_ventilation = 402 W/K`, comparable to
-the entire envelope. Ventilation is not a minor term in a rail cabin.
+Regenerating `scenarios_raw.parquet` and retraining the M4 forecaster after
+this correction moved the canonical single-scenario reference (energy
+26.75→30.86 kWh) and the M5/M6 headline numbers — see ROADMAP.md's M5 and M6
+sections for the current, valid results. Test MAE held up (+21.8%→+21.1%
+over persistence, essentially unchanged) — the correction changed the
+*physics* the model has to predict, not its ability to predict it.
+
+The 300 m³/h floor keeps a near-empty coach ventilated; it binds below 15
+passengers now (was 20), since the per-passenger rate crosses it sooner at
+20 m³/h/pax than it did at 15.
+
+At design load: `1600 m³/h → 0.53 kg/s → UA_ventilation ≈ 536 W/K` (was 1200
+m³/h / 402 W/K), now noticeably larger than the envelope term (638 W/K) —
+ventilation is not a minor term in a rail cabin, and got less minor with
+this correction.
 
 ---
 
@@ -406,9 +431,11 @@ not improved in aggregate.
 itself buys.** `src/compare_controllers.py`'s `compare_feedforward_contribution()`
 compares the shipped controller against the identical controller/deadband
 with `ff_weight` forced to 0 (pure proportional feedback, no M4 forecast).
-On the same 23 test-split scenarios: the forecast costs 6.2% more energy on
-average but cuts total degree-hours 60.47→22.86 K·h (23/23 scenarios
-equal-or-better). This is the cleanest result in the milestone and it
+On the same 23 test-split scenarios, post fresh-air correction: the forecast
+costs 6.9% more energy on average but cuts total degree-hours 66.72→19.99
+K·h (23/23 scenarios equal-or-better) — a wider gap than the pre-correction
+62%, now 70%. This has been the single most consistent result across every
+re-run in this milestone (deadband fix, fresh-air correction) and it
 directly supports the design choice above ("why feedforward alone isn't
 used" applies in reverse here too: pure feedback alone isn't the free
 option either — it is measurably worse on comfort). **Not a PID comparison**
@@ -975,7 +1002,7 @@ Ranked by *(uncertainty × influence on the result)*, not by uncertainty alone:
 | 2 | `internal_h_w_m2k` (→ `hA`) | Sets τ_fast and the boarding response. Swept 2–15 W/m²K; the conclusion survives but the magnitude moves by >2×. |
 | 3 | `air_exchange_m3_per_min` | Large disturbance (`door_ua` ≈ 563 W/K, ~90% of envelope UA) resting on a pure estimate. |
 | 4 | `u_value_w_m2k` | Sets `UA_envelope`; drives steady-state load and hence capacity sizing. |
-| 5 | `fresh_air_m3_h_per_passenger` | Would become High confidence with EN 13129 access alone — no vehicle data needed. |
+| 5 | `fresh_air_m3_h_per_passenger` | **Upgraded Low→Medium** via a real climate chamber test report citing EN 13129 Table 11 directly (20 m³/h/pax standard, 15/10 reduced). Would still become High confidence with the standard itself — this is a secondary source quoting its table, not the primary document. |
 | 6 | `cooling_capacity_w` | Easy to obtain from any real vehicle datasheet. |
 | — | `interior_mass_capacity_j_k` | **Deliberately last.** Lowest confidence in the project, but measured to be nearly irrelevant to every output that matters. |
 
@@ -1040,3 +1067,4 @@ more than the final numbers.
 | `ThermostatController` run dual-mode | Heat below the lower threshold, cool above the upper one — what a generic thermostat does. Oscillated between full heat and full cool 18 times in 166 minutes, `T_air` swinging 21.8–30 °C, because this cabin's fast air node (`τ_fast` ≈ 1.1–1.3 min) overshoots the opposite threshold before the actuator's dead-time/lag can respond | Made cooling-only, matching every other baseline already built in this project and the documented cooling-dominated climate |
 | `evaluate.run_controller`'s journey start time used `int(depart_hour * 60)` | `data_generator.py` uses `round(...)` for the same computation — a real cross-file inconsistency (up to 1 minute), found while auditing M1–M5 compatibility before trusting the M5 headline number. Harmless in practice (weather is interpolated and slowly varying), but a genuine divergence, not just style | Changed to `round(...)`, matching `data_generator.py` |
 | `AnticipatoryController`'s first M5 headline run | Used *more* energy than `ThermostatController` on 15/23 test-split scenarios, strictly worse on both energy and comfort on 6/23. Root cause: the proportional law had no floor, so it was fully off only 0.6% of minutes vs the baseline's 32.5% — continuous low-power modulation costing more than the baseline's real off-periods | Added a deadband reusing `thermostat_hysteresis_k` (no new unsourced number), applied continuously to avoid reintroducing chattering. Validated on the val split (−4.5%→+3.4% mean saving, 6/23→0/31 dominated) before confirming once on test (+3.9% mean, 0/23 dominated) |
+| `fresh_air_m3_h_per_passenger = 15` | Was the EN 13129 Table 11 *reduced/extreme-condition* rate, not the standard one — a real climate chamber test report (surfaced by a teammate) distinguishes 20 m³/h/pax normal from 15/10 reduced, and this project had the reduced figure without realizing it was one | Corrected to 20. Cascades: `supply_air_m3_h` rescaled 4800→6400 to hold the same 25% outside-air-fraction design assumption; `ventilation_ua` and both derived time constants moved (design-load τ_slow 77.7→72.3 min; empty case unaffected, below the `min_fresh_air_m3_h` floor either way); `scenarios_raw.parquet` regenerated and the forecaster retrained (test MAE improvement over persistence essentially unchanged, +21.8%→+21.1%); M5's headline energy saving dropped 3.9%→0.9% (more marginal, reported as-is) while comfort dominance got unambiguous (11/23→23/23 scenarios equal-or-better); M6's sweep now shows *negative* energy saving at low `tau_act` (0–2 min), turning positive only from ~4–5 min on — a cleaner, more conditional, more textbook-consistent result than the pre-correction sweep. Full detail in ROADMAP.md's M5 and M6 sections. Displaces an earlier cross-check against a different source's 1200 m³/h figure, which matched the old (wrong) 15 m³/h/pax exactly — left as an open question, not silently resolved, since that source never labelled its condition either |
