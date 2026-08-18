@@ -44,7 +44,7 @@ def run(model, minutes, inputs, state=None, t0=24.0, dt_s=60.0):
 def test_free_float_approaches_outdoor_temperature(model):
     """With HVAC off and nobody aboard, the cabin must tend to T_out."""
     t_out = 40.0
-    state, _ = run(model, minutes=600, inputs=CabinInputs(t_out_c=t_out), t0=20.0)
+    state, _ = run(model, minutes=600, inputs=CabinInputs(t_out_c=t_out, fan_on=False), t0=20.0)
     assert state.t_air_c == pytest.approx(t_out, abs=0.5)
     assert state.t_mass_c == pytest.approx(t_out, abs=0.5)
 
@@ -52,13 +52,13 @@ def test_free_float_approaches_outdoor_temperature(model):
 def test_free_float_converges_from_above_too(model):
     """Symmetry check: a hot cabin must cool to T_out, not just warm to it."""
     t_out = 15.0
-    state, _ = run(model, minutes=600, inputs=CabinInputs(t_out_c=t_out), t0=45.0)
+    state, _ = run(model, minutes=600, inputs=CabinInputs(t_out_c=t_out, fan_on=False), t0=45.0)
     assert state.t_air_c == pytest.approx(t_out, abs=0.5)
 
 
 def test_no_gain_no_change_at_equilibrium(model):
     """Starting at T_out with no loads, nothing should move."""
-    state, _ = run(model, minutes=120, inputs=CabinInputs(t_out_c=30.0), t0=30.0)
+    state, _ = run(model, minutes=120, inputs=CabinInputs(t_out_c=30.0, fan_on=False), t0=30.0)
     assert state.t_air_c == pytest.approx(30.0, abs=1e-6)
     assert state.t_mass_c == pytest.approx(30.0, abs=1e-6)
 
@@ -105,7 +105,7 @@ def test_slow_mode_matches_derived_time_constant(model, cfg):
     state = model.initial_state(t0)
     crossing = None
     for minute in range(1, 400):
-        r = model.step(state, CabinInputs(t_out_c=t_out), dt_s=60.0)
+        r = model.step(state, CabinInputs(t_out_c=t_out, fan_on=False), dt_s=60.0)
         if crossing is None and r.t_mass_c >= target:
             crossing = minute
             break
@@ -140,7 +140,8 @@ def test_boarding_spike_is_visible_in_air_temperature(model, cfg):
     band = cfg["comfort"]["band_k"]
 
     state = model.initial_state(t_amb)
-    _, r = run(model, minutes=8, inputs=CabinInputs(t_out_c=t_amb, n_pax=68), state=state)
+    _, r = run(model, minutes=8, inputs=CabinInputs(t_out_c=t_amb, n_pax=68, fan_on=False),
+                state=state)
 
     rise = r.t_air_c - t_amb
     assert rise > band, (
@@ -169,7 +170,8 @@ def test_single_node_would_understate_the_boarding_spike(model, cfg):
         t_lumped += (q_pax + ua * (t_amb - t_lumped)) / c_eff
 
     state = model.initial_state(t_amb)
-    _, r = run(model, minutes=minutes, inputs=CabinInputs(t_out_c=t_amb, n_pax=n_pax), state=state)
+    _, r = run(model, minutes=minutes,
+                inputs=CabinInputs(t_out_c=t_amb, n_pax=n_pax, fan_on=False), state=state)
 
     two_node_rise = r.t_air_c - t_amb
     one_node_rise = t_lumped - t_amb
@@ -195,7 +197,8 @@ def test_results_are_insensitive_to_interior_mass(cfg):
         fast.append(air_time_constant(c))
 
         state = m.initial_state(30.0)
-        _, r = run(m, minutes=8, inputs=CabinInputs(t_out_c=30.0, n_pax=68), state=state)
+        _, r = run(m, minutes=8, inputs=CabinInputs(t_out_c=30.0, n_pax=68, fan_on=False),
+                     state=state)
         spikes.append(r.t_air_c - 30.0)
 
     assert abs(fast[1] - fast[0]) / fast[0] < 0.05, "tau_fast should not depend on C_mass"
@@ -342,16 +345,44 @@ def test_cop_never_falls_below_its_floor(model, cfg):
 
 
 def test_electrical_power_reflects_cop(model):
-    """Electrical draw is coil load divided by COP, so it exceeds nothing physical."""
+    """Compressor draw is coil load over COP; total adds the supply fan."""
     state = model.initial_state(26.0)
-    _, r = run(model, minutes=60, inputs=CabinInputs(t_out_c=40.0, n_pax=60, q_hvac_cmd_w=-20000.0), state=state)
-    expected = (abs(r.q_hvac_actual_w) + r.q_latent_w) / r.cop
-    assert r.electrical_w == pytest.approx(expected)
+    _, r = run(model, minutes=60,
+               inputs=CabinInputs(t_out_c=40.0, n_pax=60, q_hvac_cmd_w=-20000.0), state=state)
+
+    expected_compressor = (abs(r.q_hvac_actual_w) + r.q_latent_w) / r.cop
+    assert r.compressor_w == pytest.approx(expected_compressor)
+    assert r.electrical_w == pytest.approx(r.compressor_w + r.fan_w)
 
 
-def test_no_electrical_draw_when_hvac_is_off(model):
+def test_only_the_fan_draws_power_when_cooling_is_off(model):
+    """With no cooling called for, the fan is still running and still costs.
+
+    This is the whole reason fan power matters: it is a floor on energy that
+    no controller can reduce, so omitting it inflates any percentage saving.
+    """
     _, r = run(model, minutes=10, inputs=CabinInputs(t_out_c=40.0, n_pax=60))
+    assert r.compressor_w == pytest.approx(0.0, abs=1e-9)
+    assert r.electrical_w == pytest.approx(model.supply_fan_w)
+
+
+def test_no_draw_at_all_when_the_fan_is_off(model):
+    _, r = run(model, minutes=10, inputs=CabinInputs(t_out_c=40.0, n_pax=60, fan_on=False))
     assert r.electrical_w == pytest.approx(0.0, abs=1e-9)
+
+
+def test_fan_heat_enters_the_cabin(model):
+    """The motor sits in the air stream, so its power lands as sensible heat."""
+    warm = run(model, minutes=45, inputs=CabinInputs(t_out_c=25.0), t0=25.0)[0]
+    cool = run(model, minutes=45, inputs=CabinInputs(t_out_c=25.0, fan_on=False), t0=25.0)[0]
+    assert warm.t_air_c > cool.t_air_c + 0.5, "fan heat is not reaching the cabin"
+
+
+def test_fan_power_matches_specific_fan_power(model, cfg):
+    """Derived from SFP and airflow, not written down as a wattage."""
+    hv = cfg["hvac"]
+    expected = hv["supply_fan_sfp_kw_per_m3s"] * 1000.0 * hv["supply_air_m3_h"] / 3600.0
+    assert model.supply_fan_w == pytest.approx(expected)
 
 
 # ------------------------------------------------------------ numerical health
