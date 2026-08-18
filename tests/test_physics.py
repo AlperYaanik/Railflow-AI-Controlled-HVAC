@@ -336,12 +336,12 @@ def test_zero_tau_act_removes_the_lag(cfg):
 # ------------------------------------------------------------------ energetics
 
 
-def test_cop_degrades_with_outdoor_temperature(model):
-    assert model.cop(45.0) < model.cop(30.0)
+def test_cop_cooling_degrades_with_outdoor_temperature(model):
+    assert model.cop_cooling(45.0) < model.cop_cooling(30.0)
 
 
-def test_cop_never_falls_below_its_floor(model, cfg):
-    assert model.cop(200.0) == pytest.approx(cfg["hvac"]["cop_min"])
+def test_cop_cooling_never_falls_below_its_floor(model, cfg):
+    assert model.cop_cooling(200.0) == pytest.approx(cfg["hvac"]["cop_min"])
 
 
 def test_electrical_power_reflects_cop(model):
@@ -383,6 +383,135 @@ def test_fan_power_matches_specific_fan_power(model, cfg):
     hv = cfg["hvac"]
     expected = hv["supply_fan_sfp_kw_per_m3s"] * 1000.0 * hv["supply_air_m3_h"] / 3600.0
     assert model.supply_fan_w == pytest.approx(expected)
+
+
+# -------------------------------------------------------------------- heating
+#
+# Mirrors the cooling actuator/energetics tests above. This section did not
+# exist before cop() was split into cop_cooling()/cop_heating() — every
+# actuator test up to that point commanded cooling only, which is how a
+# heating COP formula that read backwards (COP 3.8 at 5 C, for what is
+# actually a resistive heater) went unnoticed.
+
+
+def test_cop_heating_is_fixed_regardless_of_outdoor_temperature(model):
+    """Resistive heating is a physical identity, not a fitted curve."""
+    assert model.cop_heating(-10.0) == model.cop_heating(5.0) == model.cop_heating(30.0)
+
+
+def test_cop_heating_matches_the_configured_value(model, cfg):
+    assert model.cop_heating(5.0) == pytest.approx(cfg["hvac"]["heating_cop"])
+
+
+def test_heating_and_cooling_disagree_at_the_same_temperature(model):
+    """Regression guard for the actual bug: they must never be reunified.
+
+    Before the split, both modes shared one formula built for cooling. At
+    5 C that produced COP 3.8 for what is really a resistive heater — a
+    heat pump reading applied to equipment that isn't a heat pump.
+    """
+    t_out = 5.0
+    assert model.cop_heating(t_out) != pytest.approx(model.cop_cooling(t_out))
+    assert model.cop_heating(t_out) == pytest.approx(1.0)
+    assert model.cop_cooling(t_out) > 3.0, "cooling COP formula has changed unexpectedly"
+
+
+def test_cop_dispatch_follows_the_sign_of_delivered_power(model):
+    """step() must select cop_heating when q_hvac ends up positive, not by t_out_c."""
+    cold_state = model.initial_state(5.0)
+    _, heating_result = run(
+        model, minutes=30, inputs=CabinInputs(t_out_c=5.0, q_hvac_cmd_w=15000.0),
+        state=cold_state,
+    )
+    assert heating_result.q_hvac_actual_w > 0.0, "test setup did not actually heat"
+    assert heating_result.cop == pytest.approx(model.cop_heating(5.0))
+
+    hot_state = model.initial_state(35.0)
+    _, cooling_result = run(
+        model, minutes=30, inputs=CabinInputs(t_out_c=40.0, q_hvac_cmd_w=-15000.0),
+        state=hot_state,
+    )
+    assert cooling_result.q_hvac_actual_w < 0.0, "test setup did not actually cool"
+    assert cooling_result.cop == pytest.approx(model.cop_cooling(40.0))
+
+
+def test_heating_dead_time_delays_the_response(model):
+    """Mirrors test_dead_time_delays_the_response for the heating direction."""
+    dead_min = model.dead_time_s / 60.0
+    assert dead_min > 0, "this test assumes a non-zero dead time in config"
+
+    state = model.initial_state(5.0)
+    delivered = []
+    for _ in range(int(dead_min * 2) + 4):
+        r = model.step(state, CabinInputs(t_out_c=5.0, q_hvac_cmd_w=20000.0), dt_s=60.0)
+        delivered.append(r.q_hvac_actual_w)
+
+    assert delivered[0] == pytest.approx(0.0, abs=1.0), "power delivered before dead time elapsed"
+    assert delivered[-1] > 1000.0, "power never arrived after the dead time"
+
+
+def test_heating_lag_is_first_order(model):
+    """Mirrors test_actuator_lag_is_first_order for the heating direction."""
+    cmd = 8000.0
+    state = model.initial_state(5.0)
+    inputs = CabinInputs(t_out_c=5.0, q_hvac_cmd_w=cmd)
+
+    for _ in range(200):
+        r = model.step(state, inputs, dt_s=60.0)
+
+    assert cmd < model.deliverable_heating_w(state.t_air_c), (
+        "test setup invalid: the heating limit is binding, so this is not "
+        "measuring the lag"
+    )
+    assert r.q_hvac_actual_w == pytest.approx(cmd, rel=0.02), "never converged to the command"
+
+
+def test_heating_capacity_limit_is_enforced(model):
+    """Mirrors test_capacity_limit_is_enforced for the heating direction."""
+    huge = 10 * model.heating_capacity_w
+    state = model.initial_state(5.0)
+    _, r = run(model, minutes=120, inputs=CabinInputs(t_out_c=5.0, q_hvac_cmd_w=huge), state=state)
+    assert r.q_hvac_actual_w <= model.heating_capacity_w + 1e-6
+
+
+def test_heating_electrical_draw_equals_thermal_output(model):
+    """With COP = 1.0 exactly, electrical input must equal heat delivered.
+
+    The cleanest possible check on the fix: before it, this ratio was 3.8,
+    not 1.0, because the cooling formula was degrading COP in the wrong
+    direction for a resistive heater.
+    """
+    state = model.initial_state(5.0)
+    _, r = run(model, minutes=60, inputs=CabinInputs(t_out_c=5.0, q_hvac_cmd_w=15000.0), state=state)
+    assert r.compressor_w == pytest.approx(abs(r.q_hvac_actual_w))
+
+
+def test_no_latent_load_is_charged_during_heating(model):
+    """Only cooling dehumidifies; heating must never carry a latent term."""
+    state = model.initial_state(5.0)
+    _, r = run(model, minutes=30,
+               inputs=CabinInputs(t_out_c=5.0, n_pax=60, q_hvac_cmd_w=15000.0), state=state)
+    assert r.q_hvac_actual_w > 0.0, "test setup did not actually heat"
+    assert r.compressor_w == pytest.approx(abs(r.q_hvac_actual_w))
+
+
+def test_zero_tau_act_removes_the_lag_when_heating(cfg):
+    """Heating counterpart of test_zero_tau_act_removes_the_lag.
+
+    M6's sweep runs both directions of the actuator dead-time/lag test; the
+    endpoint must degenerate correctly regardless of which way the command
+    points.
+    """
+    import copy
+
+    c = copy.deepcopy(cfg)
+    c["hvac"]["tau_act_min"] = 0.0
+    c["hvac"]["dead_time_min"] = 0.0
+    model = CabinModel(c)
+
+    state = model.initial_state(5.0)
+    r = model.step(state, CabinInputs(t_out_c=5.0, q_hvac_cmd_w=15000.0), dt_s=60.0)
+    assert r.q_hvac_actual_w == pytest.approx(15000.0)
 
 
 # ------------------------------------------------------------ numerical health

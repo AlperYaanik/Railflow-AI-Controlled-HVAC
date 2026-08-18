@@ -326,6 +326,7 @@ event, not simply "passengers board" — the presentation should say so.
 | `cop_degradation_per_k` | 0.04 | Low |
 | `cop_reference_t_out_c` | 30.0 | Low |
 | `cop_min` | 1.2 | Low |
+| `heating_cop` | 1.0 | **High — physical identity, not fitted** |
 | `dead_time_min` | 2.0 | **Low — swept in M6** |
 | `tau_act_min` | 5.0 | **Low — swept in M6** |
 | `supply_air_m3_h` | 4800.0 | Medium |
@@ -471,14 +472,60 @@ the worst-case overshoot stays under 1.5 K, so a regression would be caught.
 It also **strengthens the project's argument**: at peak conditions there is no
 spare authority left to react with, so acting early is the only remaining lever.
 
-### COP
+### COP — cooling and heating are separate models, not one curve
 
-`COP(T_out) = max(1.2, 2.8 − 0.04·(T_out − 30))` → **2.20 at 45 °C**.
+**Cooling:** `cop_cooling(T_out) = max(1.2, 2.8 − 0.04·(T_out − 30))` →
+**2.20 at 45 °C**. 2.8 nominal at 30 °C is a design-point value for this
+equipment class. The degradation slope and floor are shape assumptions, not
+measurements — the floor exists to keep the model physical at extreme
+temperatures rather than to represent a real cut-off.
 
-2.8 nominal at 30 °C is a design-point value for this equipment class. The
-degradation slope and floor are shape assumptions, not measurements — the floor
-exists to keep the model physical at extreme temperatures rather than to
-represent a real cut-off.
+**Heating:** `cop_heating(T_out) = 1.0`, unconditionally. **This used to reuse
+the cooling formula** — `cop(t_out_c)` took only outdoor temperature and
+applied one curve to both directions. That curve says "COP falls as it gets
+hotter," correct for cooling and backwards for heating: fed a heating scenario
+it read "COP rises as it gets colder," producing **COP 3.8 at 5 °C** — a
+heat-pump reading applied to equipment that is not a heat pump.
+
+Searched specifically for rail heating hardware rather than general HVAC. The
+answer is unambiguous: rail cabin heating is **resistive** (tubular finned
+elements), sold as a standalone product distinct from the vapour-compression
+cooling unit, in the **7–36 kW** range — consistent with `heating_capacity_w`.
+Trains have abundant line/generator power, so the reliability of a simple
+resistive element is favoured over the marginal efficiency of a second
+refrigerant loop. Joule heating converts electrical input to heat directly, so
+**COP = 1.0 is a physical identity, not a fitted curve** — there is nothing to
+tune and no outdoor-temperature dependence to model.
+
+`cop(t_out_c, heating=...)` now dispatches between `cop_cooling()` and
+`cop_heating()`, selected in `step()` by the **sign of delivered power**
+(`q_hvac > 0`), never by outdoor temperature. Verified end to end: the same
+reproduction that showed COP 3.8 at 5 °C now shows COP 1.00, and electrical
+draw for 20 kW delivered heat rose from 7.93 kW to **22.67 kW** — the honest
+cost was previously understated by roughly 2.9×.
+
+**Why this sat unnoticed.** Every actuator test up to this point commanded
+cooling only — dead time, lag, capacity clamp, COP, electrical draw were all
+exercised in one direction. `tests/test_physics.py` now mirrors each of those
+for heating, plus a direct regression guard
+(`test_heating_and_cooling_disagree_at_the_same_temperature`) asserting the two
+paths are never accidentally reunified.
+
+**Severity, in practice: low.** Recomputing the actual breakeven — where
+passenger heat plus the 2.67 kW fan load stop covering envelope and
+ventilation loss, not just the sliding-setpoint curve's 20 °C boundary — against
+our cached winter weather:
+
+| Occupancy | Heating needed below | Cairo winter hours below it | Aswan |
+|---|---|---|---|
+| Empty train | 18.4 °C | 16.5% | 10.6% |
+| 40 passengers | 15.5 °C | **0.0%** | **0.0%** |
+| 68 passengers | 14.4 °C | 0.0% | 0.0% |
+
+At any realistic occupancy, heating essentially never engages against our
+cached data. The fix was worth making regardless — a wrong COP is wrong
+whether or not the current dataset happens to exercise it — but it did not
+block M4, and winter stays excluded from the M4 dataset by earlier decision.
 
 ### Actuator lag — the values that are deliberately not claimed
 
@@ -593,8 +640,9 @@ hourly, zero NaNs, hourly-contiguous.
    **907–1016 W/m²** — it exceeds the standard on irradiance too.
 
 Egypt is cooling-dominated: even *winter* Cairo reaches 28.9 °C. Heating is
-close to irrelevant, which is why `heating_capacity_w` is left at a generic
-value without further justification.
+close to irrelevant. `heating_capacity_w` and `heating_cop` are sourced in the
+HVAC section below regardless, since a wrong number is wrong whether or not the
+current dataset happens to exercise it.
 
 ---
 
@@ -775,7 +823,7 @@ Ranked by *(uncertainty × influence on the result)*, not by uncertainty alone:
 |---|---|---|
 | 1 | `tau_act_min`, `dead_time_min` | Genuinely unknown *and* directly drives the headline result. Currently swept rather than claimed — real values would replace a sweep with a number. |
 | 2 | `internal_h_w_m2k` (→ `hA`) | Sets τ_fast and the boarding response. Swept 2–15 W/m²K; the conclusion survives but the magnitude moves by >2×. |
-| 3 | `air_exchange_m3_per_stop` | Large disturbance (574 W/K, ~90% of envelope UA) resting on a pure estimate. |
+| 3 | `air_exchange_m3_per_min` | Large disturbance (`door_ua` ≈ 563 W/K, ~90% of envelope UA) resting on a pure estimate. |
 | 4 | `u_value_w_m2k` | Sets `UA_envelope`; drives steady-state load and hence capacity sizing. |
 | 5 | `fresh_air_m3_h_per_passenger` | Would become High confidence with EN 13129 access alone — no vehicle data needed. |
 | 6 | `cooling_capacity_w` | Easy to obtain from any real vehicle datasheet. |
@@ -833,3 +881,4 @@ more than the final numbers.
 | Weather held constant within the hour | A 2.40 K staircase step = 2.5 kW load jump, which M4 could have learned as signal. Worse, flooring to the hour used start-of-hour temperature, underestimating energy by 5.2% on a warming day | `to_minutes()` linear interpolation; per-minute steps fall to 0.040 K |
 | `test_decomposition_is_monotonic` asserted the wrong invariant | Used *peak error*, which is not guaranteed monotonic under closed-loop control — adding a load shifts when the controller acts, moving the peak either way. It passed by coincidence and broke when fan heat was added | Re-asserted on **energy**, which has no such escape: more heat in, more work out |
 | Equilibrium test ignored fan heat | Once fan heat was included, the peak-hour equilibrium exceeded the comfort band — the test had been passing on an incomplete load | Split into two tests: typical conditions must hold the band, extreme hours must miss it by less than a pinned tolerance |
+| One `cop()` formula for both heating and cooling | Built for cooling ("COP falls as it gets hotter"); applied to heating it read backwards and produced COP 3.8 at 5 °C for what is actually a resistive heater, understating electrical cost ~2.9× | Split into `cop_cooling()` (unchanged) and `cop_heating()` = 1.0, a physical identity for resistive elements, not a fitted curve. Dispatched by sign of delivered power, never by `t_out_c`. Ten end-to-end heating tests added — the gap that let it sit unnoticed was that every prior actuator test only ever commanded cooling |
