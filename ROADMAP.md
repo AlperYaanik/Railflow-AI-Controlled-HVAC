@@ -217,6 +217,8 @@ The improvement is smaller on test than train/val — an honest generalisation g
 
 **Tests: 175 → 178** (39 new: 17 in `test_data_generator.py`, 14 in `test_features.py`, 11 in `test_train.py`, minus overlap, plus 3 appended to `test_integration.py`). Verified on a fresh clone with no `data/` at all: every M4 test now skips with an actionable message (`Run: python -m src.weather`) instead of a raw `FileNotFoundError` — the same gap M0 fixed for notebooks and M3 fixed for the weather-dependent integration tests, recurring here because `data_generator.py` sits one layer deeper than what those earlier fixes covered.
 
+> **A follow-up check found something M5 needs to know before it's built.** Driving the saved model *live* (minute-by-minute, through the actual M2/M3 simulator, not the pre-built features table) with the plain reactive thermostat — M5's actual baseline — it beat persistence in only 1 of 4 test scenarios, against 4/4 under the policy it was trained on. Not a bug: verified the live reconstruction against batch `add_features()` on the identical trajectory and got bit-for-bit identical predictions. Full writeup and what it means for M5 in [`docs/PARAMETERS.md`](docs/PARAMETERS.md) and in M5's own section below.
+
 ---
 
 ### M5 — The result
@@ -229,6 +231,8 @@ The improvement is smaller on test than train/val — an honest generalisation g
 **Metrics:** energy (kWh) and comfort (degree-minutes outside band). Evaluated on a **held-out weather period and an unseen occupancy profile.**
 
 **Done when:** you can state one sentence — *"X% less energy at equal comfort"* — and point to the plot behind it.
+
+> **Inherited risk from M4, read before building this.** M4's forecaster beats persistence robustly (+21.8–28.5% across independent seeds) **when evaluated the way it was trained** — against the stochastic exploration policy. Tested live against the plain reactive thermostat (the actual baseline this milestone compares against) and it beat persistence in only 1 of 4 scenarios, because persistence itself is a strong baseline once a controller holds `T_air` fairly stable — there is less error left for any forecaster to remove. Full detail in [`docs/PARAMETERS.md`](docs/PARAMETERS.md). **Consequence: don't reuse the "+21.8%" figure here — it describes the wrong distribution.** Measure the predictive controller against the reactive baseline directly, on the reactive baseline's own trajectories, and report whatever that honestly shows. If it disappoints, the likely fix is training data generated under the reactive policy, not a different model.
 
 ---
 
