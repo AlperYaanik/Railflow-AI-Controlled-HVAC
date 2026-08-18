@@ -154,7 +154,11 @@ The time-constant test is the one that matters most: if the simulator disagrees 
 
 **Deliberately excluded:** speed-induced infiltration, tunnel effects, solar orientation factors. These add fidelity that no reviewer will check, and cost hours.
 
-**Modelled as a service, not a time-of-day curve.** A metro runs continuously and its loading varies through the day; an intercity train is a discrete run whose loading is a property of *which service it is*. So load factor scales a whole run. The dataset uses both directions × three load factors (0.4 / 0.7 / 1.0).
+**Modelled as a service, not a time-of-day curve.** A metro runs continuously and its loading varies through the day; an intercity train is a discrete run whose loading is a property of *which service it is*. So load factor scales a whole run. The catalogue spans **both directions × two stopping patterns × four load factors** — 16 services.
+
+Load factor **1.1** is included because it is the point where the route peaks at exactly 80 passengers, the **EN 13129 design load** (all seats occupied). Without it the standard's own worst case was never simulated: the base pattern peaks at 73.
+
+The **express** pattern follows the real **Talgo 2027** service — Cairo, Sidi Gaber, Alexandria — running the route in about 2 h 30 against the semi-express 2 h 45. It uses 8.9% less energy with half the door-minutes, and stops M4 from assuming a fixed journey length.
 
 **Done when:** 39 occupancy tests pass — the route empties at the terminus and occupancy stays non-negative at every load factor including 0 and 1.3; the base pattern reproduces the config exactly at load factor 1.0; doors open only while stopped; and the lookahead features lead the boarding event they describe (without which the controller has nothing to anticipate).
 
@@ -168,7 +172,21 @@ The time-constant test is the one that matters most: if the simulator disagrees 
 **Effort:** 3h
 
 **Build:**
-- `src/data_generator.py` — scenario loop over seasons × occupancy profiles × stochastic setpoint policies. Target **~30k rows** (this saturates a ~20-feature tabular problem; more is wasted time).
+- `src/data_generator.py` — scenario loop over the dimensions below × stochastic setpoint policies. Target **~30k rows** (this saturates a ~20-feature tabular problem; more is wasted time).
+
+**Scenario dimensions, ranked by measured effect on energy.** This ranking was produced by experiment, not guessed, and it changed the plan:
+
+| Dimension | Effect | Status |
+|---|---|---|
+| **Departure hour** | **120%** | **Must sample** — 04:00 uses 18.2 kWh, 16:00 uses 40.1 kWh |
+| City (Cairo / Aswan) | ~25% | Both included |
+| Load factor (0.4 → 1.1) | 28% | Spanned by the catalogue |
+| Day (across 92 summer days) | ~15% | Sample by percentile, never a fixed day |
+| Stopping pattern | 8.9% | Both included |
+
+Departure hour was not on any list of known issues and turns out to dominate everything else — ENR runs 37 trains daily between 04:00 and 23:00, so the whole range is real service. A model trained only on morning departures would miss most of the problem.
+
+*This also settles a deferred question: tying load factor to time of day is **not worth building**, because departure hour already carries a 4× larger effect through solar and outdoor temperature.*
 - `src/features.py` — lagged commands `u(t-1..t-k)`, command EWMA (half-life ≈ τ), cyclical time encoding, and the **lookahead features that are the entire point**: time to next station, expected boarding count, and the +30 min weather outlook.
 - `src/train.py` — LightGBM predicting `T_in` at a single horizon `t+H`, where `H` is the control horizon.
 

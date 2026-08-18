@@ -4,7 +4,13 @@ import pandas as pd
 import pytest
 
 from src.config import DATA_DIR
-from src.weather import COLUMN_NAMES, to_minutes
+from src.weather import (
+    COLUMN_NAMES,
+    daily_summary,
+    day_at_percentile,
+    humidity_ratio,
+    to_minutes,
+)
 
 
 @pytest.fixture(scope="module")
@@ -106,3 +112,88 @@ def test_a_journey_length_window_can_be_requested(hourly):
 def test_zero_or_negative_length_is_rejected(hourly):
     with pytest.raises(ValueError):
         to_minutes(hourly, hourly["timestamp"].iloc[0], 0)
+
+
+# --------------------------------------------------------- day selection (#4)
+
+
+def test_daily_summary_covers_every_day(hourly):
+    summary = daily_summary(hourly)
+    assert len(summary) == hourly["timestamp"].dt.date.nunique()
+    assert (summary["t_max"] >= summary["t_mean"]).all()
+
+
+def test_percentile_selection_is_ordered(hourly):
+    """A higher percentile must not select a cooler day."""
+    summary = daily_summary(hourly)
+    previous = -999.0
+    for pct in (0, 25, 50, 75, 100):
+        day = day_at_percentile(hourly, pct)
+        t_max = summary.loc[day, "t_max"]
+        assert t_max >= previous
+        previous = t_max
+
+
+def test_percentile_extremes_pick_the_extreme_days(hourly):
+    summary = daily_summary(hourly)
+    assert summary.loc[day_at_percentile(hourly, 0), "t_max"] == summary["t_max"].min()
+    assert summary.loc[day_at_percentile(hourly, 100), "t_max"] == summary["t_max"].max()
+
+
+def test_percentile_out_of_range_is_rejected(hourly):
+    with pytest.raises(ValueError):
+        day_at_percentile(hourly, 150)
+
+
+def test_the_day_used_in_early_analysis_was_unusually_mild(hourly):
+    """Documents why percentile selection exists.
+
+    Every analysis before this used 15 July 2024, which turns out to sit near
+    the 20th percentile of daily maximum temperature — so every figure reported
+    from it was drawn from a cooler-than-typical day.
+    """
+    summary = daily_summary(hourly)
+    target = pd.Timestamp("2024-07-15").date()
+    if target not in summary.index:
+        pytest.skip("15 July not in this weather window")
+
+    rank = (summary["t_max"] < summary.loc[target, "t_max"]).mean()
+    assert rank < 0.35, (
+        f"15 July sits at the {rank:.0%} percentile — the premise of this test "
+        "is that it was mild, so if this changes the docs need revisiting"
+    )
+
+
+# ------------------------------------------------------------- humidity (#2)
+
+
+def test_humidity_ratio_rises_with_temperature_and_humidity(hourly):
+    assert humidity_ratio(35, 50) > humidity_ratio(25, 50)
+    assert humidity_ratio(30, 80) > humidity_ratio(30, 30)
+
+
+def test_humidity_ratio_is_zero_in_perfectly_dry_air():
+    assert humidity_ratio(40, 0) == pytest.approx(0.0)
+
+
+def test_humidity_ratio_matches_a_known_psychrometric_point():
+    """25 C, 50% RH is about 9.9 g/kg on any psychrometric chart."""
+    assert humidity_ratio(25.0, 50.0) == pytest.approx(9.9, abs=0.3)
+
+
+def test_egyptian_air_is_usually_drier_than_the_cabin_target(hourly):
+    """Justifies not modelling a humidity state — for THIS climate only.
+
+    Latent load from ventilation only exists where outdoor humidity ratio
+    exceeds the indoor target. In Egypt's desert climate that is the minority of
+    hours, so the latent load is dominated by passengers, which the coil already
+    carries. This argument would not hold on a coastal route.
+    """
+    indoor = humidity_ratio(26.0, 55.0)
+    outdoor = hourly.apply(
+        lambda r: humidity_ratio(float(r["t_out_c"]), float(r["rh_out_pct"])), axis=1
+    )
+    assert (outdoor > indoor).mean() < 0.5, (
+        "outdoor air is more humid than the cabin target for most hours — "
+        "the sensible-only assumption needs revisiting for this location"
+    )

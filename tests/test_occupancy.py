@@ -187,3 +187,80 @@ def test_catalogue_covers_both_directions_and_a_load_spread(cfg):
 def test_unknown_direction_is_rejected(cfg):
     with pytest.raises(ValueError, match="unknown direction"):
         build_route(cfg, direction="sideways")
+
+
+# ---------------------------------------------------------- stopping patterns
+
+
+def test_express_calls_at_fewer_stations(cfg):
+    """The express follows the real Talgo 2027 pattern: Cairo, Sidi Gaber, Alexandria."""
+    semi = simulate(Service(pattern="semi_express"), cfg)
+    express = simulate(Service(pattern="express"), cfg)
+
+    assert len(express.stations) == len(cfg["route"]["express_calls"])
+    assert len(express.stations) < len(semi.stations)
+    assert [s.name for s in express.stations] == cfg["route"]["express_calls"]
+
+
+def test_express_is_faster_than_the_semi_express(cfg):
+    """Skipping calls returns their dwell time.
+
+    Real figures: Talgo 2027 runs Cairo-Alexandria in about 2 h 30, against
+    roughly 2 h 45 for a semi-express. The model should land between them.
+    """
+    semi = simulate(Service(pattern="semi_express"), cfg)
+    express = simulate(Service(pattern="express"), cfg)
+
+    assert len(express) < len(semi)
+    assert 2.4 < len(express) / 60.0 < 2.8
+
+
+def test_express_spends_less_time_with_doors_open(cfg):
+    """Fewer stops means less door infiltration — the main thermal difference."""
+    semi = simulate(Service(pattern="semi_express"), cfg)
+    express = simulate(Service(pattern="express"), cfg)
+    assert sum(express.door_open) < sum(semi.door_open)
+
+
+@pytest.mark.parametrize("pattern", ["semi_express", "express"])
+@pytest.mark.parametrize("load_factor", LOAD_FACTORS)
+def test_every_pattern_still_empties_at_the_terminus(cfg, pattern, load_factor):
+    p = simulate(Service(pattern=pattern, load_factor=load_factor), cfg)
+    assert p.n_pax[-1] == 0
+    assert min(p.n_pax) >= 0
+
+
+def test_unknown_pattern_is_rejected(cfg):
+    with pytest.raises(ValueError, match="unknown pattern"):
+        build_route(cfg, pattern="stopping-everywhere")
+
+
+# -------------------------------------------------------------- design load
+
+
+def test_catalogue_reaches_the_en13129_design_load(cfg):
+    """EN 13129 design load for mainline is all seats occupied.
+
+    Without a load factor above 1.0 the route peaks at 73 and the standard's own
+    worst case is never simulated.
+    """
+    design_load = cfg["occupancy"]["design_load_pax"]
+    peaks = [simulate(s, cfg).peak_pax for s in service_catalogue()]
+    assert max(peaks) >= design_load, (
+        f"catalogue peaks at {max(peaks)} pax, never reaching the EN 13129 "
+        f"design load of {design_load}"
+    )
+
+
+def test_load_factor_1_1_hits_design_load_exactly(cfg):
+    """The reason 1.1 is in the catalogue rather than some other value."""
+    p = simulate(Service(pattern="semi_express", load_factor=1.1), cfg)
+    assert p.peak_pax == cfg["occupancy"]["design_load_pax"]
+
+
+def test_catalogue_spans_both_patterns_and_a_load_spread(cfg):
+    cat = service_catalogue()
+    assert {s.pattern for s in cat} == {"semi_express", "express"}
+    assert {s.direction for s in cat} == {"down", "up"}
+    assert len({s.load_factor for s in cat}) >= 4
+    assert len({s.label for s in cat}) == len(cat), "service labels must be unique"
