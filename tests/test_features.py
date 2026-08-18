@@ -18,6 +18,7 @@ from src.features import (
     LAG_MINUTES,
     TARGET_COLUMN,
     TREND_LAG_MIN,
+    LiveFeatureBuilder,
     add_features,
 )
 
@@ -283,3 +284,150 @@ def test_default_horizon_comes_from_config(cfg):
     raw = _two_scenarios()
     feat = add_features(raw, cfg)
     assert feat.attrs["horizon_min"] == cfg["simulation"]["control_horizon_min"]
+
+
+# --------------------------------------------------- LiveFeatureBuilder (M5 prep)
+
+
+def _simulate_with_reactive_thermostat(cfg, require_weather, city="cairo", depart_hour=9.0):
+    """Runs the REAL M1-M3 stack (weather, occupancy, cabin model) under a
+    plain reactive thermostat, and returns the raw per-minute trajectory --
+    the same shape data_generator.py produces, so add_features() can be run
+    on it directly. Used to compare against LiveFeatureBuilder on genuine
+    physics, not just synthetic fixtures.
+    """
+    from src.cabin_model import CabinInputs, CabinModel
+    from src.config import DATA_DIR
+    from src.occupancy import Service, simulate
+    from src.weather import to_minutes
+
+    cfg_local = cfg
+    model = CabinModel(cfg_local)
+    wx = pd.read_csv(DATA_DIR / f"weather_{city}_summer.csv", parse_dates=["timestamp"])
+    service = Service(direction="down", pattern="semi_express", load_factor=1.0)
+    profile = simulate(service, cfg_local)
+    horizon = cfg_local["simulation"]["control_horizon_min"]
+    start = pd.Timestamp("2024-07-10") + pd.to_timedelta(int(depart_hour * 60), unit="min")
+    w = to_minutes(wx, start, len(profile) + horizon)
+
+    state = model.initial_state(model.setpoint(float(w["t_out_c"].iloc[0])))
+    rows = []
+    for t in range(len(profile)):
+        t_out = float(w["t_out_c"].iloc[t])
+        setpoint = model.setpoint(t_out)
+        frac = min(1.0, max(0.0, (state.t_air_c - setpoint) / 1.5))
+        r = model.step(state, CabinInputs(
+            t_out_c=t_out, ghi_w_m2=float(w["ghi_w_m2"].iloc[t]),
+            n_pax=profile.n_pax[t], door_open=profile.door_open[t],
+            q_hvac_cmd_w=-model.cooling_capacity_w * frac,
+        ), dt_s=60.0)
+        rows.append({
+            "scenario_id": 0, "city": city, "date": start.date(), "depart_hour": depart_hour,
+            "direction": service.direction, "pattern": service.pattern,
+            "load_factor": service.load_factor, "minute": t,
+            "t_air_c": r.t_air_c, "t_mass_c": r.t_mass_c, "t_out_c": t_out,
+            "ghi_w_m2": float(w["ghi_w_m2"].iloc[t]), "n_pax": profile.n_pax[t],
+            "door_open": profile.door_open[t],
+            "time_to_next_station_min": profile.time_to_next_station_min[t],
+            "expected_boarding": profile.expected_boarding[t], "setpoint_c": setpoint,
+            "q_hvac_cmd_w": -model.cooling_capacity_w * frac, "q_hvac_actual_w": r.q_hvac_actual_w,
+            "electrical_w": r.electrical_w, "cop": r.cop,
+        })
+    return pd.DataFrame(rows), w, service
+
+
+def test_live_feature_builder_matches_batch_add_features_exactly(cfg, require_weather):
+    """The test that makes LiveFeatureBuilder trustworthy for M5.
+
+    Runs the real simulator once, then builds features two ways on the exact
+    same trajectory: in batch via add_features(), and incrementally via
+    LiveFeatureBuilder fed the same per-minute values a controller would
+    actually have (including the +H weather lookahead, pulled from the same
+    interpolated series). They must match to the last bit, not just
+    approximately -- a controller silently using a slightly-off feature
+    vector would not crash, it would just make worse decisions.
+    """
+    raw, w, service = _simulate_with_reactive_thermostat(cfg, require_weather)
+    horizon = cfg["simulation"]["control_horizon_min"]
+
+    batch = add_features(raw, cfg)
+
+    builder = LiveFeatureBuilder(
+        cfg, city="cairo", direction=service.direction, pattern=service.pattern,
+        load_factor=service.load_factor, depart_hour=9.0,
+    )
+    live_rows = {}
+    for t in range(len(raw)):
+        row = raw.iloc[t]
+        out = builder.step(
+            t_air_c=row["t_air_c"], t_mass_c=row["t_mass_c"], t_out_c=row["t_out_c"],
+            ghi_w_m2=row["ghi_w_m2"], n_pax=row["n_pax"], door_open=row["door_open"],
+            setpoint_c=row["setpoint_c"], q_hvac_actual_w=row["q_hvac_actual_w"],
+            time_to_next_station_min=row["time_to_next_station_min"],
+            expected_boarding=row["expected_boarding"],
+            t_out_fcst_h=float(w["t_out_c"].iloc[t + horizon]),
+            ghi_fcst_h=float(w["ghi_w_m2"].iloc[t + horizon]),
+        )
+        if out is not None:
+            live_rows[t] = out
+
+    # add_features() also drops the LAST `horizon` rows of the batch, because
+    # training needs a ground-truth target and there is none past the end of
+    # the recorded journey. LiveFeatureBuilder has no such constraint -- a
+    # live controller wants a forecast at every minute it's asked for one,
+    # whether or not a "future" exists yet to grade it against. So it legally
+    # produces MORE rows than the batch (146 vs 116 here); the comparison is
+    # over the minutes both sides actually define, not equal row counts.
+    max_lag = max(LAG_MINUTES + [TREND_LAG_MIN])
+    assert set(live_rows.keys()) == set(range(max_lag, len(raw)))
+    assert set(batch["minute"]) == set(range(max_lag, len(raw) - horizon))
+    assert set(batch["minute"]) < set(live_rows.keys())
+
+    numeric_cols = [c for c in FEATURE_COLUMNS if c not in CATEGORICAL_COLUMNS]
+    for _, batch_row in batch.iterrows():
+        live_row = live_rows[int(batch_row["minute"])].iloc[0]
+        for col in numeric_cols:
+            assert live_row[col] == pytest.approx(batch_row[col], abs=1e-9), (
+                f"minute {batch_row['minute']}, column '{col}': "
+                f"live={live_row[col]!r} vs batch={batch_row[col]!r}"
+            )
+        for col in CATEGORICAL_COLUMNS:
+            assert str(live_row[col]) == str(batch_row[col])
+
+
+def test_live_feature_builder_returns_none_during_warmup(cfg):
+    max_lag = max(LAG_MINUTES + [TREND_LAG_MIN])
+    builder = LiveFeatureBuilder(cfg, city="cairo", direction="down",
+                                  pattern="semi_express", load_factor=1.0, depart_hour=8.0)
+    results = []
+    for t in range(max_lag + 5):
+        out = builder.step(
+            t_air_c=26.0, t_mass_c=26.0, t_out_c=35.0, ghi_w_m2=400.0,
+            n_pax=30, door_open=False, setpoint_c=26.0, q_hvac_actual_w=-5000.0,
+            time_to_next_station_min=20, expected_boarding=5,
+            t_out_fcst_h=36.0, ghi_fcst_h=420.0,
+        )
+        results.append(out is not None)
+    assert results == [False] * max_lag + [True] * 5
+
+
+def test_live_feature_builder_output_is_ready_for_the_model(cfg):
+    """Output must already be in the exact column order/dtypes the saved
+    booster expects -- no further massaging needed at the call site."""
+    max_lag = max(LAG_MINUTES + [TREND_LAG_MIN])
+    builder = LiveFeatureBuilder(cfg, city="aswan", direction="up",
+                                  pattern="express", load_factor=0.7, depart_hour=12.0)
+    out = None
+    for t in range(max_lag + 1):
+        out = builder.step(
+            t_air_c=28.0, t_mass_c=27.0, t_out_c=38.0, ghi_w_m2=600.0,
+            n_pax=20, door_open=t == max_lag, setpoint_c=26.0, q_hvac_actual_w=-8000.0,
+            time_to_next_station_min=10, expected_boarding=8,
+            t_out_fcst_h=39.0, ghi_fcst_h=610.0,
+        )
+    assert out is not None
+    assert list(out.columns) == list(FEATURE_COLUMNS)
+    assert len(out) == 1
+    for col in CATEGORICAL_COLUMNS:
+        assert out[col].dtype.name == "category"
+    assert out.isna().sum().sum() == 0
