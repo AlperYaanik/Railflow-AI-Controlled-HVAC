@@ -45,6 +45,7 @@ class Service:
     direction: str = "down"          # "down" = Cairo -> Alexandria
     load_factor: float = 1.0         # scales boarding against the base pattern
     dwell_scale: float = 1.0         # scales every dwell; see the confidence note
+    pattern: str = "semi_express"    # "semi_express" (all calls) or "express"
     label: str = ""
 
 
@@ -93,7 +94,42 @@ def _alight_fractions(stations_cfg: list[dict]) -> list[float]:
     return fractions
 
 
-def build_route(cfg: dict | None = None, direction: str = "down") -> list[Station]:
+def _apply_pattern(raw: list[dict], cfg: dict, pattern: str) -> list[dict]:
+    """Filter the station list to a stopping pattern.
+
+    "express" keeps only the calls listed in `route.express_calls`, which is the
+    real Talgo 2027 pattern (Cairo, Sidi Gaber, Alexandria). Skipped calls also
+    return their dwell time, so the express arrives earlier — about 2 h 35
+    against the semi-express 2 h 45, close to the real 2 h 30.
+    """
+    if pattern == "semi_express":
+        return [dict(s) for s in raw]
+    if pattern != "express":
+        raise ValueError(f"unknown pattern {pattern!r}, expected 'semi_express' or 'express'")
+
+    calls = cfg["route"].get("express_calls")
+    if not calls:
+        raise ValueError("route.express_calls is not configured")
+
+    kept, saved = [], 0
+    for station in raw:
+        if station["name"] in calls:
+            s = dict(station)
+            s["arrive_min"] = s["arrive_min"] - saved
+            kept.append(s)
+        else:
+            saved += station["dwell_min"]
+
+    if len(kept) < 2:
+        raise ValueError("express pattern must keep at least an origin and a terminus")
+    return kept
+
+
+def build_route(
+    cfg: dict | None = None,
+    direction: str = "down",
+    pattern: str = "semi_express",
+) -> list[Station]:
     """Resolve the configured route into Station objects.
 
     The "up" direction is a mirror of the configured one: the station order
@@ -102,7 +138,7 @@ def build_route(cfg: dict | None = None, direction: str = "down") -> list[Statio
     it doubles scenario variety at near-zero cost and keeps the route balanced.
     """
     cfg = cfg if cfg is not None else load_config()
-    raw = cfg["route"]["stations"]
+    raw = _apply_pattern(cfg["route"]["stations"], cfg, pattern)
 
     if direction == "down":
         seq = [dict(s) for s in raw]
@@ -160,7 +196,9 @@ def _scale_dwells(stations: list[Station], dwell_scale: float) -> list[Station]:
 def simulate(service: Service, cfg: dict | None = None) -> OccupancyProfile:
     """Expand a service into per-minute occupancy, door state and lookahead."""
     cfg = cfg if cfg is not None else load_config()
-    stations = _scale_dwells(build_route(cfg, service.direction), service.dwell_scale)
+    stations = _scale_dwells(
+        build_route(cfg, service.direction, service.pattern), service.dwell_scale
+    )
     total_min = stations[-1].arrive_min + stations[-1].dwell_min + 1
 
     n_pax = [0] * total_min
@@ -210,18 +248,32 @@ def simulate(service: Service, cfg: dict | None = None) -> OccupancyProfile:
     )
 
 
-def service_catalogue(load_factors=(0.4, 0.7, 1.0), dwell_scale: float = 1.0) -> list[Service]:
+def service_catalogue(
+    load_factors=(0.4, 0.7, 1.0, 1.1),
+    dwell_scale: float = 1.0,
+    patterns=("semi_express", "express"),
+) -> list[Service]:
     """The set of services used to generate the dataset.
 
     Load factors are [ASSUMPTION] — no ENR ridership data is public. The spread
     matters more than the individual values: the model must see lightly and
     heavily loaded runs, since passenger heat is the disturbance being
     anticipated.
+
+    1.1 is included deliberately: it is the factor at which the route peaks at
+    exactly 80 passengers, the EN 13129 design load for mainline vehicles (all
+    seats occupied). Without it the standard's own worst case is never simulated
+    — the base pattern peaks at 73.
+
+    Both stopping patterns are included because real ENR services vary: the
+    semi-express calls at all six stations, the express follows the Talgo 2027
+    pattern of three.
     """
     return [
-        Service(direction=d, load_factor=lf, dwell_scale=dwell_scale,
-                label=f"{d}-lf{lf:g}")
+        Service(direction=d, load_factor=lf, dwell_scale=dwell_scale, pattern=p,
+                label=f"{d}-{'exp' if p == 'express' else 'semi'}-lf{lf:g}")
         for d in ("down", "up")
+        for p in patterns
         for lf in load_factors
     ]
 

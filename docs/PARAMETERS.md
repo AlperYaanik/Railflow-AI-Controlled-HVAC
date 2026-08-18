@@ -188,8 +188,33 @@ total), standard ASHRAE-style values.
 **Latent heat is deliberately not coupled to air temperature.** It is added to
 the coil load — it costs energy — but does not drive `T_air`, because modelling
 that properly needs a humidity state and full psychrometrics, which is out of
-budget. This understates comfort degradation in humid conditions; Alexandria
-(coastal) would be the place that shows up.
+budget.
+
+**This is justified by the climate, not by convenience.** Latent load from
+ventilation only exists where the outdoor humidity ratio *exceeds* the indoor
+target; below that, fresh air dehumidifies the cabin. Computed against a
+26 °C / 55% RH target (11.5 g/kg) using `weather.humidity_ratio()`:
+
+| City | Median outdoor | p95 | Hours exceeding indoor target |
+|---|---|---|---|
+| Cairo | 10.8 g/kg | 16.0 | **42.3%** |
+| Aswan | 5.9 g/kg | 15.1 | **8.6%** |
+
+So in Aswan the incoming air is drier than the cabin target more than 90% of the
+time, and in Cairo the majority of the time. The latent load is dominated by
+**passengers**, which the coil already carries.
+
+**The limits of that argument, stated plainly:**
+
+- **ISO 19659-2** sets train cabin limits of **27 °C and 65% RH**, and published
+  field measurements record RH reaching **81.2%** in early morning — humidity is
+  a real operational problem in rail, just not the binding one here.
+- Cairo's p95 RH is 79% and its maximum 94%, so a humid tail exists.
+- **Alexandria is coastal and humid.** We simulate Cairo and Aswan weather, not
+  Alexandria's. That is convenient for this assumption and should be disclosed
+  rather than glossed over.
+- The argument is **Egypt-specific**. It would not transfer to a coastal or
+  monsoon route, and the model should not be presented as if it would.
 
 ---
 
@@ -232,7 +257,26 @@ rather than acceptance.
 confirmed: the only concrete public figure is Ramses Station handling ~300,000
 passengers/day, which is station-level, not per-train. Load factors are
 therefore assumptions, handled by generating the dataset across a **spread**
-(0.4 / 0.7 / 1.0) rather than committing to one value.
+(0.4 / 0.7 / 1.0 / 1.1) rather than committing to one value.
+
+**Why 1.1 is in that list.** EN 13129 defines design load for mainline vehicles
+as all seats occupied — **80 passengers**. The base route pattern peaks at 73, so
+without a factor above 1.0 the standard's own worst case was never simulated.
+1.1 is the factor at which the route peaks at exactly 80. It is also the worst
+case in every metric: +28% energy and +0.75 K worst excursion against load
+factor 0.4.
+
+**Stopping patterns.** Real ENR services vary, so the catalogue includes both:
+
+| Pattern | Calls | Journey | Door-minutes | Energy |
+|---|---|---|---|---|
+| Semi-express | 6 | 2 h 46 | 22 | baseline |
+| **Express** (Talgo 2027) | **3** | **2 h 36** | **12** | **−8.9%** |
+
+The express follows the real Talgo 2027 pattern — Cairo, Sidi Gaber,
+Alexandria — which runs the route in about 2 h 30. Skipping calls also returns
+their dwell time, landing at 2 h 36 without inventing a separate timetable. It
+matters for M4 because the model must not assume a fixed journey length.
 
 **Dwell times may be roughly 2× too long.** The literature puts scheduled dwells
 at **30 s – 2 min**, with ~35 s to move 40 passengers through a door. Our
@@ -653,6 +697,72 @@ Genuine excursions, modulating baseline, with pre-conditioning:
 **Both exceed the ±2 K comfort band.** The premise holds — but note it took a
 corrected plant model and a corrected measurement to establish it, and the
 earlier version of this claim did not survive scrutiny.
+
+---
+
+## Scenario coverage — what actually drives the result
+
+Measured across the full catalogue (2 directions × 2 stopping patterns × 4 load
+factors) on days selected by percentile, in both cities.
+
+**Headline figures, as a distribution rather than a point:**
+
+| | p10 | p50 | p90 | max |
+|---|---|---|---|---|
+| Energy per trip | 20.09 kWh | **24.94 kWh** | 30.89 kWh | 36.30 kWh |
+| Worst excursion | — | **+4.69 K** | — | +7.75 K |
+| Minutes outside band | — | **51/166** | — | 71/166 |
+
+Fan share across everything: **28.7%**.
+
+### Departure hour dominates everything else
+
+The single most important scenario variable, and it was not on the list of
+known issues at all. Same day, same service, varying only departure time:
+
+| Departure | Energy | Worst excursion | Outside band |
+|---|---|---|---|
+| 04:00 | 18.19 kWh | +3.43 K | **6**/166 |
+| 08:00 | 25.04 kWh | +4.66 K | 49/166 |
+| 12:00 | 39.57 kWh | +9.95 K | 33/166 |
+| **16:00** | **40.10 kWh** | **+11.78 K** | 38/166 |
+| 20:00 | 27.85 kWh | +8.52 K | 57/166 |
+| 22:00 | 24.14 kWh | +6.81 K | 41/166 |
+
+**120% energy swing**, against **28%** for load factor and roughly 15% for day
+percentile. ENR runs 37 trains daily between 04:00 and 23:00, so the whole range
+is real service. An 04:00 departure is nearly problem-free; a 16:00 departure is
+severely stressed.
+
+**Consequence for M4: departure hour must be a sampled dimension.** Training
+only on morning departures would miss most of the problem.
+
+**Consequence for the optional `#3a`** (tying load factor to time of day):
+**not worth building.** Departure hour already carries a 4× larger effect
+through solar and outdoor temperature, and the catalogue already spans load
+factors independently. Sampling departure hour subsumes it.
+
+### Ranking the scenario dimensions
+
+| Dimension | Effect on energy | Verdict |
+|---|---|---|
+| **Departure hour** | **120%** | Must sample in M4 |
+| City (Cairo vs Aswan) | ~25% | Both already included |
+| Load factor (0.4 → 1.1) | 28% | Already spanned |
+| Stopping pattern | 8.9% | Both already included |
+| Day percentile | ~15% | Sample across the 92 days |
+
+### A prediction of mine that was too strong
+
+I expected single-day figures to be **10–20% low**, because 15 July sits at the
+20th percentile of daily maximum temperature. Measured against the full
+catalogue, the old single-day energy figure (24.69 kWh) lands within **1%** of
+the median (24.94 kWh) — the day percentile matters much less than I claimed,
+because express services and light loads offset hot days.
+
+The underlying point still stands, but for a different reason: the **spread** is
+20–36 kWh. Quoting any single number as "the" result is wrong because of the
+range, not because of a bias. Corrected here rather than left overstated.
 
 ---
 

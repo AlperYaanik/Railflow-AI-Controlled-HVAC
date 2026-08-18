@@ -3,6 +3,7 @@
 Free, no API key. Cached to data/ as CSV; re-running skips what already exists.
 """
 
+import math
 from pathlib import Path
 
 import pandas as pd
@@ -97,6 +98,50 @@ def to_minutes(df: pd.DataFrame, start: pd.Timestamp, minutes: int) -> pd.DataFr
     )
     out.index.name = "timestamp"
     return out.reset_index()
+
+
+def humidity_ratio(t_c: float, rh_pct: float, pressure_kpa: float = 101.325) -> float:
+    """Humidity ratio [g water / kg dry air], via the Magnus saturation formula.
+
+    Used to justify not modelling a humidity state. Latent load from ventilation
+    only exists where the outdoor humidity ratio EXCEEDS the indoor target —
+    below that, bringing in fresh air dehumidifies the cabin. In Egypt's desert
+    climate that is true most of the time, so the latent load is dominated by
+    passengers, which the coil already carries.
+    """
+    p_sat = 0.61094 * math.exp(17.625 * t_c / (t_c + 243.04))
+    p_vap = max(0.0, min(rh_pct, 100.0)) / 100.0 * p_sat
+    return 0.622 * p_vap / (pressure_kpa - p_vap) * 1000.0
+
+
+def daily_summary(df: pd.DataFrame) -> pd.DataFrame:
+    """Per-day aggregates, used to choose analysis days by percentile."""
+    out = df.copy()
+    out["date"] = out["timestamp"].dt.date
+    return out.groupby("date").agg(
+        t_max=("t_out_c", "max"),
+        t_mean=("t_out_c", "mean"),
+        ghi_max=("ghi_w_m2", "max"),
+        rh_mean=("rh_out_pct", "mean"),
+    )
+
+
+def day_at_percentile(df: pd.DataFrame, percentile: float, by: str = "t_max"):
+    """Pick a day by percentile of a daily statistic, rather than arbitrarily.
+
+    Exists because every early analysis in this project used 15 July, which
+    turned out to sit at the 18th-20th percentile of daily maximum temperature —
+    so every reported figure came from an unusually mild day. Selecting by
+    percentile makes the choice explicit and reproducible.
+
+    Percentile is in [0, 100].
+    """
+    if not 0.0 <= percentile <= 100.0:
+        raise ValueError("percentile must be between 0 and 100")
+
+    ranked = daily_summary(df).sort_values(by)
+    index = int(round((len(ranked) - 1) * percentile / 100.0))
+    return ranked.index[index]
 
 
 def download_all(refresh: bool = False) -> None:

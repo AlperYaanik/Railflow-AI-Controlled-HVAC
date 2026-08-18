@@ -201,6 +201,16 @@ route:
     - {name: "Sidi Gaber",     arrive_min: 155, dwell_min: 3, boarding: 4,  alighting: 35}
     - {name: "Alexandria Misr", arrive_min: 165, dwell_min: 0, boarding: 0, alighting: 33}
 
+  # Real ENR services vary in stopping pattern. Train 2027 (Talgo) calls only at
+  # Cairo, Sidi Gaber and Alexandria and takes about 2 h 30, against ~2 h 45 for
+  # the semi-express above. Modelled by skipping the intermediate calls and
+  # recovering their dwell time, which lands at ~2 h 35 -- close to the real
+  # figure without inventing a separate timetable.
+  express_calls:                     # [TYPICAL] Real Talgo 2027 stopping pattern
+    - "Cairo Ramses"
+    - "Sidi Gaber"
+    - "Alexandria Misr"
+
 locations:
   # Real historical weather, fetched by src/weather.py from the Open-Meteo
   # Archive API. Egypt is a cooling-dominated climate: the design case is
