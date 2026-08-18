@@ -122,7 +122,26 @@ hvac:
   cooling_capacity_w: 40000.0        # [TYPICAL] Rail references quote 12-15 tons of
                                      # refrigeration (42-53 kW) for an 85 ft coach, so
                                      # 40 kW is mid-to-low for this vehicle, not high.
-  heating_capacity_w: 25000.0        # [TYPICAL] Rarely used in this climate
+  heating_capacity_w: 25000.0        # [TYPICAL] Rail heater packages (tubular finned
+                                     # resistive elements) run 7-36 kW; 25 kW sits on
+                                     # the higher side of that range, matched to our
+                                     # 40 kW cooling unit. Rarely engages in this
+                                     # climate -- see heating_cop below.
+
+  # HEATING COP -- deliberately NOT the cooling curve run backwards.
+  #
+  # Rail cabin heating is resistive (tubular finned elements), a distinct
+  # product from the vapour-compression cooling unit, not a reversible heat
+  # pump. Multiple manufacturers sell standalone electric heater packages for
+  # this purpose. Resistive heating converts electrical input to heat directly
+  # (Joule heating), so COP = 1.0 is a physical identity here, not a fitted
+  # curve -- there is no outdoor-temperature dependence to model.
+  #
+  # This used to reuse cop_nominal/cop_degradation_per_k, which was built for
+  # cooling: "COP falls as it gets hotter." Applied to heating that reads
+  # backwards -- "COP rises as it gets colder" -- and at 5 C it produced
+  # COP 3.8, roughly 4x too cheap for a resistive heater.
+  heating_cop: 1.0                   # [TYPICAL] Resistive heating identity, not fitted
 
   # SUPPLY-AIR PATH -- the constraint that makes the actuator physical.
   #

@@ -86,9 +86,12 @@ class StepResult:
     q_latent_w: float
     q_fan_w: float
     compressor_w: float
+    """Coil-side electrical draw. Compressor power when cooling (q_hvac < 0);
+    resistive-heater power when heating (q_hvac > 0) — same slot, different
+    equipment, selected by cop()."""
     fan_w: float
     electrical_w: float
-    """Total electrical draw: compressor plus supply fan."""
+    """Total electrical draw: coil (compressor or heater) plus supply fan."""
     cop: float
 
 
@@ -146,13 +149,35 @@ class CabinModel:
     def initial_state(self, t_air_c: float, t_mass_c: float | None = None) -> CabinState:
         return CabinState(t_air_c, t_air_c if t_mass_c is None else t_mass_c)
 
-    def cop(self, t_out_c: float) -> float:
-        """COP degrades as outdoor temperature rises above the reference point."""
+    def cop_cooling(self, t_out_c: float) -> float:
+        """Vapour-compression COP, degrading as outdoor temperature rises."""
         hv = self.cfg["hvac"]
         value = hv["cop_nominal"] - hv["cop_degradation_per_k"] * (
             t_out_c - hv["cop_reference_t_out_c"]
         )
         return max(hv["cop_min"], value)
+
+    def cop_heating(self, t_out_c: float) -> float:
+        """Resistive-heater COP: a physical identity, not a fitted curve.
+
+        Rail cabin heating uses tubular finned resistive elements, a separate
+        product from the cooling unit, not a reversible heat pump. Joule
+        heating converts electrical input to heat directly, so COP = 1.0 has
+        no outdoor-temperature dependence — `t_out_c` is accepted only so this
+        has the same signature as cop_cooling() and can be selected by sign of
+        the command rather than branched on at every call site.
+        """
+        return self.cfg["hvac"]["heating_cop"]
+
+    def cop(self, t_out_c: float, heating: bool = False) -> float:
+        """Dispatches to the cooling or heating COP.
+
+        These were previously one formula applied to both modes. Fed a
+        heating scenario, "COP falls as it gets hotter" reads backwards —
+        "COP rises as it gets colder" — and at 5 C it produced COP 3.8 for
+        what is actually a resistive heater, roughly 4x too cheap.
+        """
+        return self.cop_heating(t_out_c) if heating else self.cop_cooling(t_out_c)
 
     def setpoint(self, t_out_c: float) -> float:
         """EN 13129 uses a sliding interior target rather than a fixed one.
@@ -262,7 +287,8 @@ class CabinModel:
 
         # Latent load is carried by the coil (it costs energy) but does not
         # drive air temperature — we deliberately do not model a humidity state.
-        cop = self.cop(inputs.t_out_c)
+        # Only cooling dehumidifies, so latent load never applies to heating.
+        cop = self.cop(inputs.t_out_c, heating=q_hvac > 0.0)
         coil_w = abs(q_hvac) + (q_latent if q_hvac < 0 else 0.0)
         compressor_w = coil_w / cop
 
@@ -295,8 +321,9 @@ if __name__ == "__main__":
     print(f"tau_slow (cabin) : {thermal_time_constant(cfg) / 60:.1f} min")
     print(f"door_ua          : {model.door_ua:.0f} W/K while open")
     print(f"solar_aperture   : {model.solar_aperture:.1f} m2 effective")
-    print(f"COP @ 45 C       : {model.cop(45.0):.2f}")
-    print(f"setpoint @ 45 C  : {model.setpoint(45.0):.1f} C")
+    print(f"COP cooling @ 45 C : {model.cop_cooling(45.0):.2f}")
+    print(f"COP heating @ 5 C  : {model.cop_heating(5.0):.2f}  (resistive, no T_out dependence)")
+    print(f"setpoint @ 45 C    : {model.setpoint(45.0):.1f} C")
     print()
 
     # Free-float for 3 h at 45 C with a full coach, HVAC off.
