@@ -113,12 +113,12 @@ class CabinModel:
         self.dead_time_s = hv["dead_time_min"] * 60.0
         self.tau_act_s = hv["tau_act_min"] * 60.0
 
-        # Door infiltration is a bulk air exchange spread over the dwell.
-        doors = self.cfg["doors"]
+        # Door infiltration, as a rate while the door is open. Deliberately
+        # independent of the timetable: how fast air crosses an open doorway is
+        # a property of the doorway, not of how long the train is scheduled to
+        # sit there. Total exchange per stop then follows from the dwell length.
         tm = self.cfg["thermal_mass"]
-        dwells = [s["dwell_min"] for s in self.cfg["route"]["stations"] if s["dwell_min"] > 0]
-        mean_dwell_min = sum(dwells) / len(dwells) if dwells else 1.0
-        m3_per_s = doors["air_exchange_m3_per_stop"] / (mean_dwell_min * 60.0)
+        m3_per_s = self.cfg["doors"]["air_exchange_m3_per_min"] / 60.0
         self.door_ua = m3_per_s * tm["air_density_kg_m3"] * tm["air_cp_j_kgk"]
 
     # ---------------------------------------------------------------- helpers

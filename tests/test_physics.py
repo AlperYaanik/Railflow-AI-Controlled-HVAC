@@ -359,3 +359,38 @@ def test_door_opening_increases_heat_ingress(model):
     _, opened = run(model, minutes=1, inputs=CabinInputs(t_out_c=45.0, n_pax=70, door_open=True))
     assert opened.q_door_w > 0.0
     assert closed.q_door_w == pytest.approx(0.0)
+
+
+def test_door_physics_is_independent_of_the_timetable(cfg):
+    """Editing the route must not change how fast air crosses an open door.
+
+    An earlier version expressed door infiltration as a total per stop divided
+    by the route's mean dwell. Lengthening one station's dwell by 12 minutes
+    then moved door_ua by 36% at *every* station — the timetable was silently
+    rewriting the physics.
+    """
+    import copy
+
+    baseline = CabinModel(cfg).door_ua
+
+    edited = copy.deepcopy(cfg)
+    edited["route"]["stations"][0]["dwell_min"] = 20
+    assert CabinModel(edited).door_ua == pytest.approx(baseline)
+
+    fewer = copy.deepcopy(cfg)
+    fewer["route"]["stations"] = fewer["route"]["stations"][:3]
+    assert CabinModel(fewer).door_ua == pytest.approx(baseline)
+
+
+def test_door_exchange_accumulates_with_dwell_length(cfg):
+    """A longer stop must let in proportionally more heat."""
+    model = CabinModel(cfg)
+    inputs = CabinInputs(t_out_c=45.0, n_pax=70, door_open=True)
+
+    short_state = model.initial_state(25.0)
+    short = sum(model.step(short_state, inputs, dt_s=60.0).q_door_w for _ in range(2))
+
+    long_state = model.initial_state(25.0)
+    long = sum(model.step(long_state, inputs, dt_s=60.0).q_door_w for _ in range(6))
+
+    assert long > 2.0 * short, "tripling the dwell should let in substantially more heat"

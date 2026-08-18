@@ -197,19 +197,78 @@ budget. This understates comfort degradation in humid conditions; Alexandria
 
 | Parameter | Value | Confidence |
 |---|---|---|
-| `air_exchange_m3_per_stop` | 120.0 | **Low** |
+| `air_exchange_m3_per_min` | 28.0 | **Low** |
 
-Bulk air exchange over one dwell, spread evenly across the mean dwell time
-(4.2 min over the route) → **`door_ua = 574 W/K` while open**.
+A **rate while the door is open** → `door_ua = 563 W/K`. Total exchange per stop
+follows from the dwell length.
 
-Sanity: 120 m³ against a 150 m³ saloon is ~0.8 air changes per stop. Plausible
-for doors open 3–8 minutes on a hot day.
+Sanity: 28 m³/min against a 150 m³ saloon is ~0.19 air changes per minute, so a
+3-minute dwell turns over roughly half the cabin volume.
 
-**Flagged:** 574 W/K approaches the entire envelope `UA` of 638 W/K, so an open
-door nearly doubles the coupling to outdoors. That makes station stops a large
-disturbance — which suits the project's premise, so it deserves scrutiny rather
-than acceptance. If the demo result looks suspiciously good, this is the first
-number to re-examine.
+**Previously a bug.** This was expressed as a total *per stop* divided by the
+route's mean dwell. That coupled the physics to the timetable: lengthening
+Cairo's dwell from 8 to 20 minutes moved `door_ua` by **−36% at every station**,
+including ones that had not changed. A rate is the correct form — how fast air
+crosses an open doorway is a property of the doorway, not of the schedule.
+`test_door_physics_is_independent_of_the_timetable` locks this.
+
+**Still flagged:** 563 W/K approaches the entire envelope `UA` of 638 W/K, so an
+open door nearly doubles the coupling to outdoors. That makes station stops a
+large disturbance — which suits the project's premise, so it deserves scrutiny
+rather than acceptance.
+
+---
+
+## Timetable and occupancy
+
+| Parameter | Value | Confidence |
+|---|---|---|
+| Station dwell times | 3–8 min | **Low — see below** |
+| `load_factor` (in `occupancy.py`) | 0.4 / 0.7 / 1.0 | **Low** |
+| `dwell_scale` | 1.0 | **Low — exposed for sweeping** |
+| Boarding / alighting counts | per config route | **Low** |
+
+**No Egyptian National Railways ridership data is public.** Searched and
+confirmed: the only concrete public figure is Ramses Station handling ~300,000
+passengers/day, which is station-level, not per-train. Load factors are
+therefore assumptions, handled by generating the dataset across a **spread**
+(0.4 / 0.7 / 1.0) rather than committing to one value.
+
+**Dwell times may be roughly 2× too long.** The literature puts scheduled dwells
+at **30 s – 2 min**, with ~35 s to move 40 passengers through a door. Our
+intermediate stations use 3–4 minutes. An 8-minute dwell at Cairo Ramses is
+defensible for a terminus (crew, cleaning, scheduling), but the intermediate
+stops are probably generous.
+
+This matters because door heat scales with dwell:
+
+| `dwell_scale` | Door-minutes | Door energy | Share of station heat |
+|---|---|---|---|
+| 0.50 | 13 | 1.87 kWh | 13% |
+| **1.00** | **22** | **3.16 kWh** | **20%** |
+| 1.50 | 31 | 4.45 kWh | 26% |
+
+Since a longer dwell inflates exactly the disturbance our controller is meant to
+fix, this is a bias **in our favour** and must not be left unexamined.
+`dwell_scale` exists so it can be swept rather than trusted.
+
+**Alighting is stored as a fraction, not a count.** The config lists absolute
+alighting numbers, but those break under load-factor scaling — at 0.4 load a
+fixed count can exceed the number of people aboard and drive occupancy negative.
+`occupancy.py` converts them to fractions of those aboard, which keeps the route
+balanced at any load factor and is lossless at the calibration point
+(`test_base_pattern_reproduces_the_config_exactly`).
+
+**Door vs passenger, quantified.** Which disturbance actually dominates:
+
+| | During a stop (instantaneous) | Over the whole journey |
+|---|---|---|
+| Door | **8.6 kW** | 3.16 kWh |
+| Passengers (sensible) | 5.1 kW | **12.86 kWh** |
+
+So the *station spike* is door-dominated while *total energy* is
+passenger-dominated. The disturbance being anticipated is a combined station
+event, not simply "passengers board" — the presentation should say so.
 
 ---
 
@@ -375,6 +434,59 @@ value without further justification.
 
 ---
 
+## OPEN ISSUE — must be settled before M5
+
+**The HVAC has no supply-air rate limit, and the baseline controller design is
+now the decisive choice for the headline result.**
+
+The model applies rated cooling capacity directly to the air node as sensible
+power. With `C_air = 0.181 MJ/K` and 40 kW, that permits an unopposed air
+cooling rate of **13.3 K/min**. Combined with a 2-minute actuator dead time, a
+bang-bang thermostat overshoots hard and enters a large limit cycle.
+
+Measured on a full Cairo–Alexandria run (15 Jul 2024, 08:00, full load):
+
+- Baseline sits **1.35 K below setpoint on average**, and **72 of 166 minutes
+  fall outside the ±2 K comfort band**
+- Worst station excursion above setpoint is only **+1.73 K** — inside the band
+- So **the controller's own oscillation is larger than the station disturbances
+  it is supposed to be struggling with**
+
+A real unit cannot behave this way. Delivering 40 kW through a realistic
+recirculation flow would need supply air 24–40 K below cabin temperature:
+
+| Airflow | Implied `UA` | ΔT needed for 40 kW |
+|---|---|---|
+| 3000 m³/h | 1005 W/K | 39.8 K |
+| 4000 m³/h | 1340 W/K | 29.9 K |
+| 5000 m³/h | 1675 W/K | 23.9 K |
+
+Real supply air is around 10–14 °C, so the true sensible delivery into the air
+node is rate-limited well below the rated figure. Rated capacity also includes
+latent load and fresh-air pre-cooling, so it was never a pure sensible number.
+
+**Why this must not be ignored:** if M5 compares a predictive controller against
+a bang-bang baseline that oscillates for a modelling reason rather than a
+physical one, the result will look excellent for the wrong reason. That is a
+straw-man baseline, and it is exactly the kind of thing a Siemens engineer would
+find in questioning.
+
+**Options for M5, in order of preference:**
+
+1. Add a supply-air flow limit to the actuator (a rate cap on delivered sensible
+   power). Most physical, roughly 20 lines, and makes both controllers fairer.
+2. Use a staged or modulating baseline (real rail HVAC commonly stages
+   compressors rather than running pure on/off), which removes most of the
+   artificial oscillation without changing the plant model.
+3. Keep bang-bang but state plainly that the baseline is unmodulated and that
+   part of the measured gain comes from modulation rather than anticipation.
+
+Option 1 plus 2 is the honest combination. Whatever is chosen, the reported
+result must separate *how much comes from anticipation* from *how much comes
+from simply modulating better*.
+
+---
+
 ## Calibration priority
 
 If real vehicle or operational data ever arrives, replace in this order.
@@ -431,3 +543,6 @@ more than the final numbers.
 | Boarding-spike justification test | Ran `T_out = 40 °C` against a 24 °C cabin, so the outdoor gradient supplied 3.3× more heat than the passengers. Measured envelope gain and called it a boarding spike | Re-tested isothermally. Honest figures: 2.12 K (2R2C) vs 0.71 K (1R1C) over 8 min |
 | `test_substepping_does_not_change_the_answer` | Tautological — both branches integrate at `SUBSTEP_S`, so it could not detect discretisation error despite claiming to prove convergence | Renamed to say what it checks; added a real convergence study with a failure guard |
 | `interior_mass_capacity_j_k = 1.6e6` | A bare guess at 37% of a mass budget, with no rationale | Rebuilt from the budget (2.8 MJ/K), and swept to show it barely matters |
+| Door infiltration as a per-stop total | Divided by the route's mean dwell, so editing one station's timetable changed `door_ua` by −36% at *every* station | Restated as a rate while open, decoupling physics from schedule; regression test added |
+| M3 station-disturbance measurement | Measured temperature rise from wherever the cabin happened to sit. A badly tuned controller was overcooling ~4 K, so most of the "rise" was recovery, not disturbance — the same confounding as the M2 boarding test | Re-measured as excursion *above setpoint* under a baseline that actually holds setpoint |
+| M3 door-vs-passenger decomposition | Returned doors-only (+2.65 K) as *larger* than doors-plus-passengers (+2.26 K), which is impossible for a monotonic system. The bang-bang limit cycle swamped the disturbance being measured | Discarded as invalid. Superseded by the open issue above — the decomposition cannot be measured until the baseline stops oscillating for modelling reasons |
