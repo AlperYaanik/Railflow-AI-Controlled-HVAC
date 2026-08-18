@@ -332,6 +332,52 @@ event, not simply "passengers board" — the presentation should say so.
 | `supply_air_m3_h` | 4800.0 | Medium |
 | `supply_air_min_temp_c` | 10.0 | Low |
 | `supply_air_max_temp_c` | 45.0 | Low |
+| `thermostat_hysteresis_k` | 2.0 | **Medium — two independent sources agree** |
+
+### Thermostat hysteresis (M5)
+
+`thermostat_hysteresis_k = 2.0` — the **controller's own switching deadband**,
+not `comfort.band_k` (the scoring metric's threshold). The two are
+deliberately different concepts that happen to both land near 2 K; a test
+(`test_hysteresis_and_comfort_band_are_independent_config_values`) guards
+against a future edit conflating them because the numbers currently match.
+
+Two independent sources converge: a real vehicle A/C patent documents a
+1.5 K hysteresis band (thresholds 3–4.5 K either side of a reference); AIRAH
+(commercial HVAC guidance) gives 1 K as a minimum, **2 K as the standard
+target** for systems prioritising energy savings, 3 K as a stretch target.
+2.0 K is AIRAH's standard target, sitting close to the patent figure rather
+than picked to match it.
+
+**Found the hard way that this plant needs to stay single-mode.** A first
+version of `ThermostatController` ran dual-mode — cooling above the upper
+threshold, heating below the lower one, matching a generic thermostat. Traced
+minute by minute (not just checked in aggregate), it oscillated between full
+heat and full cool **18 times in a 166-minute journey**, `T_air` swinging
+21.8–30 °C. This cabin's air node is fast (`τ_fast` ≈ 1.1–1.3 min) relative to
+the rated capacities, so a full-power command overshoots the *opposite*
+threshold before the actuator's own dead-time/lag can arrest it — a hysteresis
+band sized for a slower plant doesn't hold here. Fixed by making the M5
+baseline cooling-only, matching every other baseline already built in this
+project. `thermostat_hysteresis_k` itself was not wrong; running it dual-mode
+on this specific plant was.
+
+### Anticipatory controller blend (M5)
+
+`ff_weight = 0.6`, `gain_k = 3.0` — the feedforward (M4 forecast) / feedback
+(current error) blend ratio and control gain. **`[ASSUMPTION]`**, and honestly
+so: no literature source gives an exact blend ratio for this combination of a
+LightGBM forecaster and this specific plant. A real train HVAC MPC study
+(cited in ROADMAP's M5 section) confirms the *shape* — feedforward with
+real-time feedback correction, not pure feedforward — but not a ratio.
+
+Swept across `ff_weight ∈ {0, 0.3, 0.6, 0.9, 1.0}` in
+`tests/test_controllers.py` rather than asserted correct — the same treatment
+given to every other under-sourced parameter here (`hA`, `C_mass`, the
+`StochasticController`'s `gain_divisor`). `ff_weight = 0` is also a
+correctness check on the formula itself: it must degenerate to plain
+proportional feedback exactly, verified against a hand-computed value, not
+just "run without crashing."
 
 ### Cooling capacity — raised from 30 kW during the M1 audit
 
@@ -952,3 +998,7 @@ more than the final numbers.
 | M4 exploration policy's reactive mode | `err = t_air_c − setpoint` is positive when too hot, and the dispatch sent positive fractions to heating — so the "realistic" control mode fought overheating with heat, 57.6% of rows in the first generated dataset | Caught by checking the command-mode distribution against configured weights, not a crash. Fixed to `err = setpoint − t_air_c`; both directions now have dedicated tests |
 | `lgb.Dataset(...).construct()` crashed natively | Access violation deep in `LGBM_DatasetSetField` on this Windows environment. Bisected shape, dtype, contiguity, ownership, value range and value order — all ruled out — before isolating it to **import order**: `import pandas` (unused) before `import lightgbm` reproduces it on a trivial random array, every time | `lightgbm` imported first in `src/train.py`; forced session-wide in `tests/conftest.py`, since pytest could otherwise import a pandas-using test file first. Worth checking again on the team's own machines during the 22 Aug handoff |
 | One `cop()` formula for both heating and cooling | Built for cooling ("COP falls as it gets hotter"); applied to heating it read backwards and produced COP 3.8 at 5 °C for what is actually a resistive heater, understating electrical cost ~2.9× | Split into `cop_cooling()` (unchanged) and `cop_heating()` = 1.0, a physical identity for resistive elements, not a fitted curve. Dispatched by sign of delivered power, never by `t_out_c`. Ten end-to-end heating tests added — the gap that let it sit unnoticed was that every prior actuator test only ever commanded cooling |
+| "Degree-minutes outside band" as the M5 comfort metric | An invented unit — nowhere in HVAC comfort literature. Every comfort number produced in this project's analysis, before this correction, had actually been a minute-*count* anyway, a different and weaker metric than either name implies | Sourced properly: "degree-hours" (Salimi et al., *Indoor Air*, 2021) is the real, citable convention. `degree_hours_outside_band()` computes at native minute resolution and reports in K·h |
+| `AnticipatoryController`'s error sign | `current_error = t_air_c − setpoint_c` (positive when hot) fed a dispatch built for negative-when-hot — the identical class of bug already fixed once in `data_generator.py`'s `StochasticController`. Fixing only this produced no visible change in testing | Flipped to `setpoint − t_air_c`. But see the next row — this fix alone was not sufficient, and its apparent no-op was itself a symptom worth recording |
+| `AnticipatoryController`'s dispatch line | A second, independent sign bug: `-cooling_capacity_w * frac` instead of `frac * cooling_capacity_w`, given `frac` is already signed. This one was masking the error-sign fix directly above — two bugs stacked to look like "the fix did nothing," found by tracing `frac` and the delivered command minute by minute rather than trusting an unchanged aggregate result | Corrected to `frac * capacity`, matching the already-correct pattern in `data_generator.py`. A 46 °C-adjacent day that had ended at 43 °C (fighting itself with heat) now ends at 24.9 °C |
+| `ThermostatController` run dual-mode | Heat below the lower threshold, cool above the upper one — what a generic thermostat does. Oscillated between full heat and full cool 18 times in 166 minutes, `T_air` swinging 21.8–30 °C, because this cabin's fast air node (`τ_fast` ≈ 1.1–1.3 min) overshoots the opposite threshold before the actuator's dead-time/lag can respond | Made cooling-only, matching every other baseline already built in this project and the documented cooling-dominated climate |

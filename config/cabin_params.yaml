@@ -192,6 +192,20 @@ hvac:
   dead_time_min: 2.0                 # [ASSUMPTION] Compressor spin-up, damper travel
   tau_act_min: 5.0                   # [ASSUMPTION] SWEPT IN M6 — never presented as fact
 
+  # THERMOSTAT HYSTERESIS (M5's on/off baseline) -- the controller's own
+  # switching deadband, NOT comfort.band_k above (that's the metric threshold
+  # for scoring discomfort, a different concept entirely).
+  #
+  # An early draft used an ad-hoc 0.5-1.0 K band, which is unrealistically
+  # narrow -- a real compressor would cycle far more often than that. Sourced
+  # instead: a vehicle A/C patent documents a real hysteresis of 1.5 K
+  # (thresholds 3-4.5 K either side of setpoint); AIRAH (commercial HVAC
+  # guidance) recommends 1 K minimum, 2 K as the standard target for systems
+  # prioritising energy savings, up to 3 K as a stretch target. 2.0 K is the
+  # AIRAH standard target, not the low or high end of either source.
+  thermostat_hysteresis_k: 2.0       # [TYPICAL] AIRAH standard target; matches the
+                                     # 1.5 K figure found in a real vehicle A/C patent
+
 comfort:
   # EN 13129 defines interior temperature as a sliding function of outdoor
   # temperature rather than a fixed setpoint. This is a simplified version of
@@ -201,7 +215,13 @@ comfort:
   sliding_t_out_high_c: 40.0         # [ASSUMPTION] Above this, setpoint stays at its ceiling
   sliding_setpoint_low_c: 22.0       # [ASSUMPTION] Setpoint at the low end
   sliding_setpoint_high_c: 26.0      # [ASSUMPTION] Setpoint at the high end
-  band_k: 2.0                        # [ASSUMPTION] Comfort band half-width, +/- K
+  band_k: 2.0                        # [ASSUMPTION] Comfort band half-width, +/- K.
+                                     # This is the METRIC threshold (how far outside
+                                     # counts as discomfort for evaluation), not the
+                                     # on/off controller's own switching deadband --
+                                     # see hvac.thermostat_hysteresis_k below. The two
+                                     # are conceptually different and deliberately not
+                                     # tied to the same number.
 
 simulation:
   timestep_min: 1                    # [ASSUMPTION] 1-min integration, aggregated to 5 min later
