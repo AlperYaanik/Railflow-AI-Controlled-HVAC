@@ -17,16 +17,18 @@ programme.
 pip install -r requirements.txt
 ```
 
-Weather data is **not** committed — it is regenerable and `data/` is gitignored.
-Fetch it once before running anything:
+Nothing under `data/` or `models/` is committed — all of it is regenerable and
+gitignored (weather cache, the generated dataset, the trained forecaster).
+Build it once, in order, before running anything that needs the model:
 
 ```bash
-python -m src.weather
+python -m src.weather          # real 2024 hourly weather for Cairo/Aswan (Open-Meteo, free, no key)
+python -m src.data_generator   # ~30k rows across ~190 simulated journeys
+python -m src.train            # trains and saves the forecaster (a few seconds)
 ```
 
-That pulls real 2024 hourly weather for Cairo and Aswan from the Open-Meteo
-Archive API (free, no API key) and caches it to `data/`. Tests that need weather
-skip with an explanatory message until you do.
+Tests and scripts that need weather/data/model skip with an actionable message
+(e.g. `Run: python -m src.weather`) until the corresponding step above has run.
 
 ## Verify the install
 
@@ -34,26 +36,30 @@ skip with an explanatory message until you do.
 python -m pytest tests/ -q
 ```
 
-81 tests. They cover the physics (free-float convergence, derived time
-constants, actuator behaviour, numerical convergence), the timetable and
-occupancy invariants, and the seams between the three layers.
+223 tests. Physics (free-float convergence, derived time constants, actuator
+behaviour, numerical convergence), timetable/occupancy invariants, feature
+engineering (leakage checks, batch/live equivalence), the forecaster
+(chronological split, beats persistence), the two controllers (regression
+guards for two real bugs found during development — see `docs/PARAMETERS.md`),
+the M5 comparison harness, and the M6 actuator-lag sweep.
 
 ## Look at the model
 
 ```bash
-python -m src.config
+python -m src.config             # every derived physical quantity (UA, C, both time constants)
+python -m src.occupancy          # service catalogue, station-by-station passenger profile
+python -m src.train               # retrains, reports test MAE vs the persistence baseline
+python -m src.compare_controllers # the M5 headline: AnticipatoryController vs on/off, and a
+                                   # feedforward-contribution ablation, on the held-out test split
+python -m src.sweep_tau_act       # M6: re-runs both comparisons across a range of actuator lag
+python -m src.plot_tau_act_sweep  # produces data/m6_tau_act_sweep.png from the sweep above
 ```
 
-Prints every derived quantity — heat capacities, both `UA` terms, the internal
-coupling, and both thermal time constants. **No time constant is written in the
-config**; they are consequences of the declared physical parameters, and the
-tests check the simulator against them.
-
-```bash
-python -m src.occupancy
-```
-
-Prints the service catalogue and the station-by-station passenger profile.
+**No time constant is written in `config/cabin_params.yaml`**; both are
+consequences of the declared physical parameters (`C_air`, `C_mass`, `UA`,
+`hA`), and the physics tests check the simulator against the derivation. The
+actuator lag (`tau_act`) is genuinely unknown and is never asserted either —
+see M6.
 
 ## Layout
 
@@ -64,9 +70,16 @@ Prints the service catalogue and the station-by-station passenger profile.
 | `src/weather.py` | Open-Meteo download and cache |
 | `src/cabin_model.py` | Two-node cabin thermal model + HVAC actuator |
 | `src/occupancy.py` | Timetable, passenger loading, door events, lookahead |
-| `tests/` | Physics, occupancy and cross-layer integration tests |
+| `src/data_generator.py` | Generates the training dataset by simulating many journeys |
+| `src/features.py` | Feature engineering — batch (`add_features`) and live (`LiveFeatureBuilder`), kept provably identical |
+| `src/train.py` | Trains the LightGBM forecaster (T_air 30 min ahead), chronological split |
+| `src/controllers.py` | `ThermostatController` (on/off baseline) and `AnticipatoryController` (forecast-driven) |
+| `src/evaluate.py` | Drives a controller through a real scenario minute by minute; scores energy + comfort |
+| `src/compare_controllers.py` | The M5 comparison harness — on/off headline and a feedforward-contribution ablation |
+| `src/sweep_tau_act.py`, `src/plot_tau_act_sweep.py` | M6 — sweeps the unknown actuator lag rather than asserting a value |
+| `tests/` | Physics, occupancy, features, training, controllers, and cross-layer integration tests |
 | `ROADMAP.md` | Milestones M0–M8, objective-driven |
-| `docs/PARAMETERS.md` | **Why every coefficient has the value it has** |
+| `docs/PARAMETERS.md` | **Why every coefficient has the value it has, plus a corrections log** |
 
 ## What the numbers do and do not claim
 
@@ -90,10 +103,21 @@ along the way, because the reasoning matters more than the final numbers.
 
 ## Status
 
-M0–M3 complete: repository hygiene, sourced parameters and real weather, the
-cabin thermal model, and the timetable/occupancy layer. Next is the dataset and
-forecasting model (M4), then the controller comparison that produces the
-headline result (M5).
+**M0–M6 complete.** Repository hygiene and sourced parameters (M0–M1); the
+cabin thermal model and physics tests (M2); the timetable/occupancy layer
+(M3); a forecaster that beats persistence on genuinely held-out future dates
+(M4); the controller comparison (M5) — a modest, honestly-reported energy
+saving plus a much larger, more consistent comfort improvement, after a
+first attempt that came back negative and was diagnosed and fixed; and the
+actuator-lag sensitivity sweep (M6), which found the original "savings grow
+monotonically with lag" hypothesis only partly true and a more useful
+finding (comfort robustness to that unknown) in its place. Full results and
+the reasoning behind every correction are in `ROADMAP.md` and
+`docs/PARAMETERS.md`.
+
+**Next:** M7 (a live Streamlit demo running the same simulator) and M8
+(handover — the UART protocol document for the hardware side, and a
+validated serial bridge).
 
 ## License
 
