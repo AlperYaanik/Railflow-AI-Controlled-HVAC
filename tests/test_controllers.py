@@ -244,8 +244,10 @@ def test_anticipatory_degenerates_to_pure_feedback_at_ff_weight_zero(require_mod
 
     model = CabinModel(cfg)
     setpoint = model.setpoint(35.0)
-    # With ff_weight=0, frac = clip((setpoint - t_air)/gain_k, -1, 1) exactly --
-    # verify on one manual point rather than the whole trajectory.
+    half_band = cfg["hvac"]["thermostat_hysteresis_k"] / 2.0
+    # With ff_weight=0, raw = (setpoint - t_air), deadbanded (see the class
+    # docstring), then /gain_k, clipped -- verify on one manual point rather
+    # than the whole trajectory.
     ctrl = AnticipatoryController(model, booster,
                                    LiveFeatureBuilder(cfg, "cairo", "down", "semi_express", 1.0, 8.0),
                                    ff_weight=0.0, gain_k=3.0)
@@ -254,8 +256,37 @@ def test_anticipatory_degenerates_to_pure_feedback_at_ff_weight_zero(require_mod
                                time_to_next_station_min=20, expected_boarding=10,
                                t_out_fcst_h=36.0, ghi_fcst_h=520.0)
     ctrl.command(inputs)
-    expected_frac = np.clip((setpoint - 30.0) / 3.0, -1.0, 1.0)
+    raw = setpoint - 30.0
+    excess = abs(raw) - half_band
+    raw_db = np.sign(raw) * excess if excess > 0.0 else 0.0
+    expected_frac = np.clip(raw_db / 3.0, -1.0, 1.0)
     assert ctrl.last_frac == pytest.approx(expected_frac)
+
+
+def test_anticipatory_deadband_zeroes_a_small_error(require_model, cfg):
+    """Regression guard for the exact mechanism the deadband fixes: an error
+    smaller than half the hysteresis band must produce frac EXACTLY 0, not a
+    small nonzero nudge. Before this was added, the controller was almost
+    never truly off (0.6% of minutes on the canonical scenario, vs
+    ThermostatController's 32.5%) -- continuous low-power modulation, which
+    is why it used MORE energy than the baseline on most of the M4 test
+    split. See docs/PARAMETERS.md's M5 correction log.
+    """
+    booster = lgb.Booster(model_file=str(MODEL_PATH))
+    model = CabinModel(cfg)
+    half_band = cfg["hvac"]["thermostat_hysteresis_k"] / 2.0
+    ctrl = AnticipatoryController(model, booster,
+                                   LiveFeatureBuilder(cfg, "cairo", "down", "semi_express", 1.0, 8.0),
+                                   ff_weight=0.0, gain_k=3.0)
+    setpoint = model.setpoint(35.0)
+    small_error_t_air = setpoint - (half_band * 0.5)  # inside the deadband
+    inputs = ControllerInputs(t_air_c=small_error_t_air, t_mass_c=small_error_t_air, t_out_c=35.0,
+                               ghi_w_m2=500.0, n_pax=40, door_open=False, q_hvac_actual_w=0.0,
+                               time_to_next_station_min=20, expected_boarding=10,
+                               t_out_fcst_h=36.0, ghi_fcst_h=520.0)
+    cmd = ctrl.command(inputs)
+    assert ctrl.last_frac == 0.0
+    assert cmd == 0.0
 
 
 @pytest.mark.parametrize("ff_weight", [0.0, 0.3, 0.6, 0.9, 1.0])

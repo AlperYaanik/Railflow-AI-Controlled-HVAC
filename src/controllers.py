@@ -120,8 +120,9 @@ class ThermostatController:
 class AnticipatoryController:
     """Feedforward (M4's t+H forecast) blended with feedback (current error).
 
-    frac = clip( (ff_weight * predicted_error + (1-ff_weight) * current_error)
-                 / gain_k, -1, 1 )
+    raw  = ff_weight * predicted_error + (1-ff_weight) * current_error
+    raw  = deadband(raw, thermostat_hysteresis_k / 2)   -- see below
+    frac = clip( raw / gain_k, -1, 1 )
     cmd  = -cooling_capacity * frac   if frac < 0  (predicted/current too hot)
          =  heating_capacity * frac   if frac > 0
 
@@ -129,6 +130,23 @@ class AnticipatoryController:
     t+H (from the same weather-forecast lookahead the feature already uses,
     not today's setpoint) -- predicted state against predicted target, not
     predicted state against today's target.
+
+    THE DEADBAND -- added after the M5 test-split comparison came back
+    NEGATIVE (this controller using MORE energy than ThermostatController on
+    most of the 23 held-out scenarios). Diagnosis, not guesswork: on the
+    canonical scenario, ThermostatController is fully off 32.5% of the time;
+    this controller's raw proportional law, with no floor, was fully off
+    only 0.6% of the time -- it never stops nudging, so it pays continuous
+    low-power compressor cost the baseline's real "off" periods avoid
+    entirely. Reusing `hvac.thermostat_hysteresis_k` (already sourced for
+    ThermostatController) as this controller's own deadband gives both
+    controllers the same real-world switching tolerance instead of inventing
+    a second unsourced number. Applied as a continuous shrink-to-zero
+    (`excess = |raw| - half_band`, zero below it, `sign(raw) * excess`
+    above), not a hard on/off jump -- a discontinuous version risks the exact
+    chattering ThermostatController hit the first time dual-mode hysteresis
+    was tried on this fast plant (tau_fast ~1.1-1.3 min). Full before/after
+    numbers in docs/PARAMETERS.md's M5 correction log.
 
     ff_weight and gain_k are [ASSUMPTION]: no literature source gives an
     exact blend ratio for this combination of forecaster and plant. Swept in
@@ -175,14 +193,21 @@ class AnticipatoryController:
             # feedback, the same reactive law ThermostatController's hysteresis
             # midpoint implies, so the controller does something sane rather
             # than nothing during warmup.
-            frac = float(np.clip(current_error / self.gain_k, -1.0, 1.0))
+            raw = current_error
         else:
             pred_t_air_h = float(self.booster.predict(features[list(FEATURE_COLUMNS)])[0])
             setpoint_h = self.model.setpoint(inputs.t_out_fcst_h)
             predicted_error = setpoint_h - pred_t_air_h
-            blended = self.ff_weight * predicted_error + (1.0 - self.ff_weight) * current_error
-            frac = float(np.clip(blended / self.gain_k, -1.0, 1.0))
+            raw = self.ff_weight * predicted_error + (1.0 - self.ff_weight) * current_error
 
+        # Deadband -- see the class docstring for why this exists. Continuous
+        # (shrinks to 0 smoothly, no jump at the edge) rather than a hard
+        # on/off threshold, so it can't reintroduce chattering.
+        half_band = self.model.cfg["hvac"]["thermostat_hysteresis_k"] / 2.0
+        excess = abs(raw) - half_band
+        raw = float(np.sign(raw) * excess) if excess > 0.0 else 0.0
+
+        frac = float(np.clip(raw / self.gain_k, -1.0, 1.0))
         self.last_frac = frac
         hv = self.model.cfg["hvac"]
         # frac is ALREADY signed (negative=cool, positive=heat) and capacities

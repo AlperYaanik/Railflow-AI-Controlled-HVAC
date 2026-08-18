@@ -17,6 +17,7 @@ from src.features import (
     FEATURE_COLUMNS,
     LAG_MINUTES,
     TARGET_COLUMN,
+    TRAINED_EWMA_HALFLIFE_MIN,
     TREND_LAG_MIN,
     LiveFeatureBuilder,
     add_features,
@@ -431,3 +432,36 @@ def test_live_feature_builder_output_is_ready_for_the_model(cfg):
     for col in CATEGORICAL_COLUMNS:
         assert out[col].dtype.name == "category"
     assert out.isna().sum().sum() == 0
+
+
+def test_live_feature_builder_ewma_halflife_ignores_a_swept_tau_act(cfg):
+    """The exact property the M6-readiness audit added: LiveFeatureBuilder's
+    EWMA halflife must NOT follow cfg["hvac"]["tau_act_min"] when a caller
+    (M6's tau_act sweep, src/sweep_tau_act.py) overrides it for CabinModel's
+    actuator. Without this, sweeping the actuator's physical lag would also
+    silently reshape the feature the frozen forecaster was trained on --
+    conflating genuine lag sensitivity with train/serve feature skew.
+    """
+    import copy
+
+    swept = copy.deepcopy(cfg)
+    swept["hvac"]["tau_act_min"] = 999.0  # deliberately far from any real value
+    builder = LiveFeatureBuilder(swept, city="cairo", direction="down",
+                                  pattern="semi_express", load_factor=1.0, depart_hour=8.0)
+    assert builder.halflife == max(TRAINED_EWMA_HALFLIFE_MIN, 0.1)
+    assert builder.halflife != 999.0
+
+
+def test_add_features_ewma_halflife_ignores_a_swept_tau_act(cfg):
+    """Same property, batch side -- add_features() must match
+    LiveFeatureBuilder's default rather than the two silently diverging."""
+    import copy
+
+    raw = _two_scenarios()
+    swept = copy.deepcopy(cfg)
+    swept["hvac"]["tau_act_min"] = 999.0
+    default_halflife_feat = add_features(raw, cfg, horizon_min=5)
+    swept_cfg_feat = add_features(raw, swept, horizon_min=5)
+    pd.testing.assert_series_equal(
+        default_halflife_feat["q_actual_ewma"], swept_cfg_feat["q_actual_ewma"]
+    )

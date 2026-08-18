@@ -35,6 +35,31 @@ LAG_MINUTES = [1, 2, 3, 5, 10, 15, 20]
 """Command lags. Spans dead_time_min (2) through several tau_act_min (5
 default) -- enough for the model to see the actuator's own lag state."""
 
+TRAINED_EWMA_HALFLIFE_MIN = load_config()["hvac"]["tau_act_min"]
+"""The tau_act_min scenarios_raw.parquet (and so the saved forecaster) was
+generated and trained under -- captured ONCE at import, from the same
+config/cabin_params.yaml every other default in this project reads.
+
+THIS MUST STAY FIXED INDEPENDENTLY OF cfg["hvac"]["tau_act_min"] AT CALL
+TIME. M6 sweeps that field to vary the ACTUATOR's physical lag
+(CabinModel.tau_act_s) while the already-trained, already-frozen forecaster
+is not retrained per sweep point. If add_features()/LiveFeatureBuilder read
+tau_act_min live from whatever cfg a caller passes, sweeping the actuator's
+lag would ALSO silently reshape the q_actual_ewma feature the model was fit
+to -- conflating genuine actuator-lag sensitivity (what the sweep measures)
+with train/serve feature skew (an artefact of reusing a frozen model on a
+shifted feature distribution). Found during the M6-readiness audit, before
+any sweep code existed -- see ROADMAP.md's M6 section.
+
+Both add_features() and LiveFeatureBuilder default their ewma_halflife_min
+parameter to this constant rather than reading cfg directly, so every
+EXISTING caller (which never overrides it) behaves identically to before
+this constant existed -- it happens to equal the live cfg lookup today,
+since nothing has changed cabin_params.yaml since training. A sweep caller
+should pass cfg with a different tau_act_min to CabinModel, but this
+constant (explicitly, for clarity) to the feature builder.
+"""
+
 TREND_LAG_MIN = 15
 """How far back to look for a simple recent-warming/cooling rate feature."""
 
@@ -59,11 +84,20 @@ TARGET_COLUMN = "target_t_air_c"
 CATEGORICAL_COLUMNS = ("city", "direction", "pattern")
 
 
-def add_features(df: pd.DataFrame, cfg: dict | None = None, horizon_min: int | None = None) -> pd.DataFrame:
+def add_features(
+    df: pd.DataFrame, cfg: dict | None = None, horizon_min: int | None = None,
+    ewma_halflife_min: float | None = None,
+) -> pd.DataFrame:
     """Adds features and the target column; drops rows without full history/future.
 
     Returns a new DataFrame. Input rows are unchanged except for added columns
     and the drop at the edges of each scenario.
+
+    `ewma_halflife_min` defaults to TRAINED_EWMA_HALFLIFE_MIN, NOT
+    cfg["hvac"]["tau_act_min"] -- see that constant's docstring. Only a caller
+    deliberately re-deriving a NEW forecaster under a different actuator
+    assumption should ever pass this explicitly; training as normal (the only
+    thing that calls this today) gets the identical value either way.
     """
     cfg = cfg if cfg is not None else load_config()
     horizon_min = horizon_min if horizon_min is not None else cfg["simulation"]["control_horizon_min"]
@@ -74,7 +108,10 @@ def add_features(df: pd.DataFrame, cfg: dict | None = None, horizon_min: int | N
     for lag in LAG_MINUTES:
         df[f"q_actual_lag_{lag}"] = g["q_hvac_actual_w"].shift(lag)
 
-    halflife = max(cfg["hvac"]["tau_act_min"], 0.1)
+    halflife = max(
+        ewma_halflife_min if ewma_halflife_min is not None else TRAINED_EWMA_HALFLIFE_MIN,
+        0.1,
+    )
     df["q_actual_ewma"] = g["q_hvac_actual_w"].transform(
         lambda s: s.ewm(halflife=halflife).mean()
     )
@@ -139,14 +176,23 @@ class LiveFeatureBuilder:
     """
 
     def __init__(self, cfg: dict, city: str, direction: str, pattern: str,
-                 load_factor: float, depart_hour: float):
+                 load_factor: float, depart_hour: float,
+                 ewma_halflife_min: float | None = None):
+        """`ewma_halflife_min` defaults to TRAINED_EWMA_HALFLIFE_MIN, NOT
+        cfg["hvac"]["tau_act_min"] -- see that constant's docstring. A caller
+        sweeping cfg["hvac"]["tau_act_min"] for CabinModel's actuator (M6)
+        must NOT let that same swept value reach here, or the model starts
+        seeing a feature distribution it was never trained on."""
         self.cfg = cfg
         self.city = city
         self.direction = direction
         self.pattern = pattern
         self.load_factor = load_factor
         self.depart_hour = depart_hour
-        self.halflife = max(cfg["hvac"]["tau_act_min"], 0.1)
+        self.halflife = max(
+            ewma_halflife_min if ewma_halflife_min is not None else TRAINED_EWMA_HALFLIFE_MIN,
+            0.1,
+        )
         self.max_lag = max(LAG_MINUTES + [TREND_LAG_MIN])
 
         self._t_air_history: list[float] = []

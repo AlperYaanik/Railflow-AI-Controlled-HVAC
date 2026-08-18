@@ -68,7 +68,12 @@ def run_controller(
     wx = pd.read_csv(DATA_DIR / f"weather_{city}_summer.csv", parse_dates=["timestamp"])
     service = Service(direction=direction, pattern=pattern, load_factor=load_factor)
     profile = simulate(service, cfg)
-    start = pd.Timestamp(date) + pd.to_timedelta(int(depart_hour * 60), unit="min")
+    # round(), not int() -- data_generator.py rounds depart_hour to the nearest
+    # minute when starting a scenario; truncating here instead would silently
+    # start this replay up to a minute earlier than the scenario it's meant to
+    # match. Harmless in effect (weather is interpolated and slowly varying, see
+    # weather.to_minutes), but a real cross-file inconsistency, not just style.
+    start = pd.Timestamp(date) + pd.to_timedelta(round(depart_hour * 60), unit="min")
     w = to_minutes(wx, start, len(profile) + horizon)
 
     model = CabinModel(cfg)
