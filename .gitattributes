@@ -1,0 +1,23 @@
+# Normalise line endings for text so the repo is consistent across Windows,
+# Linux and macOS. Contributors here work on Windows (core.autocrlf=true),
+# which is exactly the setting that silently corrupts binaries without this file.
+* text=auto
+
+# Binary files must never have line endings rewritten. Without these rules git
+# treats an unrecognised binary as text and applies LF->CRLF on checkout, which
+# corrupts the file for anyone cloning the repo.
+*.pdf     binary
+*.png     binary
+*.jpg     binary
+*.jpeg    binary
+*.gif     binary
+*.ico     binary
+*.parquet binary
+*.pkl     binary
+*.pt      binary
+*.onnx    binary
+*.zip     binary
+*.xlsx    binary
+
+# Notebooks are JSON; keep them text but never merge them automatically.
+*.ipynb   text merge=binary
