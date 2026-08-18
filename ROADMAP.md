@@ -146,7 +146,11 @@ The time-constant test is the one that matters most: if the simulator disagrees 
 
 **Deliberately excluded:** speed-induced infiltration, tunnel effects, solar orientation factors. These add fidelity that no reviewer will check, and cost hours.
 
-**Done when:** a full-day line profile shows recognisable rush-hour structure and visible thermal disturbances at station stops.
+**Modelled as a service, not a time-of-day curve.** A metro runs continuously and its loading varies through the day; an intercity train is a discrete run whose loading is a property of *which service it is*. So load factor scales a whole run. The dataset uses both directions × three load factors (0.4 / 0.7 / 1.0).
+
+**Done when:** 39 occupancy tests pass — the route empties at the terminus and occupancy stays non-negative at every load factor including 0 and 1.3; the base pattern reproduces the config exactly at load factor 1.0; doors open only while stopped; and the lookahead features lead the boarding event they describe (without which the controller has nothing to anticipate).
+
+> **What M3 found.** Two problems, both now recorded in [`docs/PARAMETERS.md`](docs/PARAMETERS.md). First, door infiltration was expressed as a per-stop total divided by the route's mean dwell — so editing one station's timetable moved `door_ua` by 36% at *every* station. Fixed by restating it as a rate. Second, and more important: **the bang-bang baseline's own oscillation is larger than the station disturbances it faces** (72 of 166 minutes outside the comfort band, against a worst station excursion of +1.73 K). That traces to the actuator having no supply-air rate limit. It is written up as an open issue that must be settled before M5, because comparing against a baseline that oscillates for a modelling reason rather than a physical one would be a straw man.
 
 ---
 

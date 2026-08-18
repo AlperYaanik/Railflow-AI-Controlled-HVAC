@@ -100,7 +100,17 @@ occupancy:
 doors:
   # Mainline: infrequent stops, so door infiltration matters less than on metro,
   # but the step at each station is still a real disturbance.
-  air_exchange_m3_per_stop: 120.0    # [ASSUMPTION] Bulk exchange over a full dwell
+  #
+  # Expressed as a RATE while the door is open, not a total per stop. An earlier
+  # version stated a per-stop total and divided by the route's mean dwell, which
+  # meant editing one station's timetable silently changed the door physics at
+  # every other station -- a 12-minute change to Cairo moved door_ua by 36%.
+  # Physically the exchange continues for as long as the door is open, so a rate
+  # is the correct form and it decouples the physics from the timetable.
+  #
+  # 28 m3/min against a 150 m3 saloon is ~0.19 air changes per minute, so a
+  # 3-minute dwell exchanges roughly half the cabin volume.
+  air_exchange_m3_per_min: 28.0      # [ASSUMPTION] Rate while doors are open
 
 hvac:
   # Sized for the Egyptian design condition, NOT a generic European coach.
