@@ -51,6 +51,9 @@ class CabinInputs:
     n_pax: float = 0.0
     door_open: bool = False
     q_hvac_cmd_w: float = 0.0
+    fan_on: bool = True
+    """Supply fan state. Defaults on: a train in service ventilates continuously,
+    whether or not cooling is called for."""
 
 
 @dataclass
@@ -81,7 +84,11 @@ class StepResult:
     q_passengers_w: float
     q_solar_w: float
     q_latent_w: float
+    q_fan_w: float
+    compressor_w: float
+    fan_w: float
     electrical_w: float
+    """Total electrical draw: compressor plus supply fan."""
     cop: float
 
 
@@ -121,6 +128,12 @@ class CabinModel:
         self.supply_ua = hv["supply_air_m3_h"] / 3600.0 * rho_cp
         self.supply_min_c = hv["supply_air_min_temp_c"]
         self.supply_max_c = hv["supply_air_max_temp_c"]
+
+        # Supply fan: continuous electrical draw, and the same power lands in
+        # the cabin as sensible heat because the motor sits in the air stream.
+        self.supply_fan_w = (
+            hv["supply_fan_sfp_kw_per_m3s"] * 1000.0 * hv["supply_air_m3_h"] / 3600.0
+        )
 
         # Door infiltration, as a rate while the door is open. Deliberately
         # independent of the timetable: how fast air crosses an open doorway is
@@ -223,6 +236,7 @@ class CabinModel:
         q_pax = inputs.n_pax * self.pax_sensible_w
         q_latent = inputs.n_pax * self.pax_latent_w
         q_solar = inputs.ghi_w_m2 * self.solar_aperture
+        q_fan = self.supply_fan_w if inputs.fan_on else 0.0
 
         q_env = q_vent = q_door = 0.0
         q_hvac = 0.0
@@ -235,7 +249,8 @@ class CabinModel:
             d_door = ua_door * (inputs.t_out_c - state.t_air_c)
             d_coupling = self.ha * (state.t_mass_c - state.t_air_c)
 
-            q_air = d_env + d_vent + d_door + d_coupling + q_pax + q_solar + q_hvac
+            q_air = (d_env + d_vent + d_door + d_coupling
+                     + q_pax + q_solar + q_fan + q_hvac)
             q_mass = -d_coupling
 
             state.t_air_c += h * q_air / self.c_air
@@ -249,7 +264,7 @@ class CabinModel:
         # drive air temperature — we deliberately do not model a humidity state.
         cop = self.cop(inputs.t_out_c)
         coil_w = abs(q_hvac) + (q_latent if q_hvac < 0 else 0.0)
-        electrical_w = coil_w / cop
+        compressor_w = coil_w / cop
 
         return StepResult(
             t_air_c=state.t_air_c,
@@ -261,7 +276,10 @@ class CabinModel:
             q_passengers_w=q_pax,
             q_solar_w=q_solar,
             q_latent_w=q_latent,
-            electrical_w=electrical_w,
+            q_fan_w=q_fan,
+            compressor_w=compressor_w,
+            fan_w=q_fan,
+            electrical_w=compressor_w + q_fan,
             cop=cop,
         )
 

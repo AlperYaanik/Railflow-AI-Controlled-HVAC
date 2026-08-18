@@ -145,6 +145,23 @@ hvac:
   supply_air_min_temp_c: 10.0        # [ASSUMPTION] Coil limit; colder risks frost and
                                      # draught complaints
   supply_air_max_temp_c: 45.0        # [ASSUMPTION] Heating-side equivalent
+
+  # SUPPLY FAN -- runs continuously, and counts twice.
+  #
+  # Fresh air must be delivered whether or not cooling is called for, so the
+  # supply fan is a FLOOR on energy rather than a variable cost. Omitting it
+  # inflates any percentage saving, because the denominator is too small.
+  #
+  # It also counts as a heat load: the motor sits in the air stream, so its
+  # electrical power lands in the cabin as sensible heat.
+  #
+  # Only the SUPPLY fan is modelled here. The condenser fan is conventionally
+  # already inside quoted COP/EER figures, so counting it again would double up.
+  #
+  # EN 13779 / EN 16798-3 put constant-volume systems at 1.7 kW/(m3/s) and
+  # variable-volume at 2.4, with regulatory values typically 2-3. Rail ducting
+  # is compact and filtered, so mid-range rather than best-in-class.
+  supply_fan_sfp_kw_per_m3s: 2.0     # [TYPICAL] EN 13779 / EN 16798-3 range
   cop_nominal: 2.8                   # [TYPICAL] Design-point coefficient of performance
   cop_degradation_per_k: 0.04        # [ASSUMPTION] COP falls as outdoor temperature rises
   cop_reference_t_out_c: 30.0        # [ASSUMPTION] Reference point for the degradation curve

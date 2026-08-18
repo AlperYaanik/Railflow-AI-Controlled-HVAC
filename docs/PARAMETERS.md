@@ -348,6 +348,85 @@ parameter in this project.
 complaints. EN 13129 governs draught limits but is paywalled, so this stays
 `[ASSUMPTION]`.
 
+### Supply fan — the energy floor, and a heat load
+
+`supply_fan_sfp_kw_per_m3s = 2.0` → **2.67 kW continuous**.
+
+EN 13779 / EN 16798-3 put constant-volume systems at **1.7 kW/(m³/s)** and
+variable-volume at **2.4**, with regulatory values typically 2–3. Rail ducting is
+compact and filtered, so mid-range rather than best-in-class.
+
+**Only the supply fan is modelled.** The condenser fan is conventionally already
+inside quoted COP/EER figures, so counting it separately would double up.
+
+It matters twice over:
+
+1. **Electrical floor.** The fan runs continuously because fresh air must be
+   delivered whether or not cooling is called for. No controller can reduce it.
+2. **Heat load.** The motor sits in the air stream, so its 2.67 kW lands in the
+   cabin as sensible heat, raising the cooling demand it is supposed to serve.
+
+Measured over a full Cairo–Alexandria run:
+
+| | Energy | Share |
+|---|---|---|
+| Compressor | 16.21 kWh | 68.7% |
+| **Supply fan** | **7.38 kWh** | **31.3%** |
+| **Total** | **23.59 kWh** | |
+
+Compressor energy itself rose from 14.12 to 16.21 kWh, because the fan heat has
+to be removed.
+
+**Why this had to be fixed before M5.** Omitting the fan inflates every
+percentage saving, because the denominator is too small. Concretely: **a 10%
+compressor saving is only 6.9% of the true total.** Reporting the first number
+would have been wrong in the direction that flatters us.
+
+### Weather interpolation
+
+The archive is hourly; the simulation steps every minute. Held constant within
+the hour, outdoor temperature is a staircase — the largest step on 15 Jul 2024
+in Cairo is **2.40 K**, landing as a **2.5 kW instantaneous load jump**, a
+quarter of a station event and entirely an artifact of data resolution.
+
+`src/weather.py:to_minutes()` interpolates onto a 1-minute grid. Per-minute
+steps fall from **2.40 K to 0.040 K**.
+
+It also removed a **systematic bias**, which was the bigger problem. Flooring to
+the hour used the temperature at the *start* of each hour, which on a warming
+day is consistently too cool — so energy was **underestimated by 5.2%**
+(23.59 → 24.83 kWh). A smoothing fix turned out to be an accuracy fix.
+
+---
+
+## KNOWN LIMITATION — the unit misses the band at extreme hours
+
+Once supply-air limiting **and** fan heat are both accounted for, the modelled
+40 kW unit cannot hold the ±2 K comfort band at the hottest measured conditions:
+
+| City | Peak `T_out` | Equilibrium without fan | With fan | Band limit |
+|---|---|---|---|---|
+| Cairo | 46.4 °C | 27.67 °C | **28.69 °C** | 28.0 °C |
+| Aswan | 48.1 °C | 27.80 °C | **28.82 °C** | 28.0 °C |
+
+The fan alone is worth **+1.02 K** on equilibrium — enough on its own to push
+the peak hours outside the band.
+
+How often it actually matters:
+
+| City | Summer hours outside band | Worst overshoot |
+|---|---|---|
+| Cairo | **0.5%** | +0.69 K |
+| Aswan | **2.0%** | +1.23 K |
+
+**This is accepted, not a defect.** Real trains do run warm in extreme heat, and
+98–99.5% coverage is a realistic design point. Two tests pin it: one asserts the
+band holds through typical conditions (<5% of hours exceeded), the other asserts
+the worst-case overshoot stays under 1.5 K, so a regression would be caught.
+
+It also **strengthens the project's argument**: at peak conditions there is no
+spare authority left to react with, so acting early is the only remaining lever.
+
 ### COP
 
 `COP(T_out) = max(1.2, 2.8 − 0.04·(T_out − 30))` → **2.20 at 45 °C**.
@@ -640,3 +719,7 @@ more than the final numbers.
 | "40 kW is at the top of the commercial range" | Based on a 23–32 kW source. A better reference gives 12–15 tons (42–53 kW) for an 85 ft coach, making 40 kW mid-to-low | Corrected in the HVAC section |
 | "Station spike is door-dominated" | An instantaneous comparison that ignored doors being open only 13% of the journey | Superseded by the valid decomposition: passengers dominate energy 22× over and peak excursion too |
 | "The peak excursion is capacity-limited" | Hypothesised because all three baselines shared an identical +3.73 K max. Wrong — the HVAC never saturates (0 of 166 min). The peak was the origin boarding against the actuator dead time | Recorded rather than quietly dropped, because the hypothesis was tested and falsified |
+| Fan power omitted entirely | Only compressor power was counted. The supply fan is 31% of total energy and its heat adds ~1 K to equilibrium. Omitting it inflates every percentage saving — a 10% compressor saving is 6.9% of the true total | Supply fan added as both an electrical floor and a cabin heat load |
+| Weather held constant within the hour | A 2.40 K staircase step = 2.5 kW load jump, which M4 could have learned as signal. Worse, flooring to the hour used start-of-hour temperature, underestimating energy by 5.2% on a warming day | `to_minutes()` linear interpolation; per-minute steps fall to 0.040 K |
+| `test_decomposition_is_monotonic` asserted the wrong invariant | Used *peak error*, which is not guaranteed monotonic under closed-loop control — adding a load shifts when the controller acts, moving the peak either way. It passed by coincidence and broke when fan heat was added | Re-asserted on **energy**, which has no such escape: more heat in, more work out |
+| Equilibrium test ignored fan heat | Once fan heat was included, the peak-hour equilibrium exceeded the comfort band — the test had been passing on an incomplete load | Split into two tests: typical conditions must hold the band, extreme hours must miss it by less than a pinned tolerance |

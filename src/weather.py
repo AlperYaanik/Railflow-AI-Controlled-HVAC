@@ -65,6 +65,40 @@ def get(city: str, season: str, location: dict, refresh: bool = False) -> pd.Dat
     return df
 
 
+def to_minutes(df: pd.DataFrame, start: pd.Timestamp, minutes: int) -> pd.DataFrame:
+    """Resample hourly weather onto a 1-minute grid by linear interpolation.
+
+    The archive is hourly but the simulation steps every minute. Held constant
+    within the hour, outdoor temperature becomes a staircase: on 15 Jul 2024 in
+    Cairo the largest hour-to-hour step is 2.40 K, which lands on the cabin as a
+    2.5 kW instantaneous load jump — a quarter of a station event, and entirely
+    an artifact of the data's resolution.
+
+    That matters beyond realism: a model trained on stepped weather can learn
+    the step timing as if it were signal.
+
+    GHI is interpolated the same way. Hourly irradiance is really an average
+    over the hour, so interpolation is an approximation either way, but a smooth
+    ramp is closer to the truth than a staircase.
+    """
+    if minutes <= 0:
+        raise ValueError("minutes must be positive")
+
+    series = df.set_index("timestamp").sort_index()
+    grid = pd.date_range(start=start, periods=minutes, freq="1min")
+
+    # Union the two indices so interpolation has the surrounding hourly anchors,
+    # then keep only the minute grid.
+    union = series.index.union(grid)
+    out = (
+        series.reindex(union)
+        .interpolate(method="time", limit_direction="both")
+        .reindex(grid)
+    )
+    out.index.name = "timestamp"
+    return out.reset_index()
+
+
 def download_all(refresh: bool = False) -> None:
     cfg = load_config()
     for location in cfg["locations"]:
