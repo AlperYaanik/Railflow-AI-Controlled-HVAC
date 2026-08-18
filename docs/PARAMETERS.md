@@ -284,6 +284,9 @@ event, not simply "passengers board" — the presentation should say so.
 | `cop_min` | 1.2 | Low |
 | `dead_time_min` | 2.0 | **Low — swept in M6** |
 | `tau_act_min` | 5.0 | **Low — swept in M6** |
+| `supply_air_m3_h` | 4800.0 | Medium |
+| `supply_air_min_temp_c` | 10.0 | Low |
+| `supply_air_max_temp_c` | 45.0 | Low |
 
 ### Cooling capacity — raised from 30 kW during the M1 audit
 
@@ -300,12 +303,50 @@ design occupancy and the sliding setpoint:
 
 A saturated unit would have made M5 meaningless: both controllers pin at the
 limit during exactly the hours that matter, so the comparison would measure
-nothing. **40 kW** gives ~15% margin on the worst case.
+nothing.
 
-Cross-check against real products: commercial rail HVAC units run **23–32 kW**,
-with up to ~40 kW for high-capacity stock. 40 kW is at the **top** of the
-commercial range — the right place for a 46–48 °C design condition, but it
-should be described as the top of the range, not a mid-range choice.
+**That table assumed 40 kW was always available. It is not.** Re-run against the
+supply-air limit, the unit cannot hold setpoint at peak — but the cabin settles
+inside the comfort band anyway, because as it warms the load falls and authority
+rises:
+
+| City | Peak `T_out` | Setpoint | Load at setpoint | Available at setpoint | Equilibrium |
+|---|---|---|---|---|---|
+| Cairo | 46.4 °C | 26.0 °C | 30.1 kW | 25.7 kW | **27.7 °C** (+1.7 K) |
+| Aswan | 48.1 °C | 26.0 °C | 30.4 kW | 25.7 kW | **27.8 °C** (+1.8 K) |
+
+Both sit just inside the ±2 K band, with little margin. This is realistic — real
+trains do run warm in extreme heat — but it is marginal, and a hotter day or a
+higher load would push it out. Do not describe the unit as comfortably sized.
+
+**Correction to an earlier claim.** This document previously said 40 kW sat at
+the *top* of the commercial range, based on a source quoting 23–32 kW. A better
+reference gives **12–15 tons of refrigeration for an 85-foot coach car**, i.e.
+**42–53 kW**. Against that, 40 kW for a 26 m coach is **mid-to-low**, not high.
+Both readings can be true — the lower figures are per-unit and installations
+often carry two or three units — but the honest description is "within the
+commercial range", not "at the top of it".
+
+**More important than the rating: it is not all deliverable.** The rated figure
+includes latent load and fresh-air pre-cooling and was never pure sensible power
+into the cabin air. What actually reaches the air node is bounded by the
+supply-air path — see the resolved issue above. At setpoint the usable figure is
+about **25.7 kW**, not 40.
+
+### Supply air
+
+`supply_air_m3_h = 4800` — derived rather than guessed. Rail HVAC supplies
+**20–30% outside air at design conditions**; fresh air at design load is
+15 m³/h/pax × 80 = **1200 m³/h**, which at ~25% implies ~4800 m³/h total supply.
+
+An independent source quotes **1200 m³/h for a 24 m intercity coach with 80
+passengers at +45 °C** — an exact match to our fresh-air figure, arrived at
+separately. That is the only genuine external confirmation of any ventilation
+parameter in this project.
+
+`supply_air_min_temp_c = 10.0` is the coil limit; colder risks frost and draught
+complaints. EN 13129 governs draught limits but is paywalled, so this stays
+`[ASSUMPTION]`.
 
 ### COP
 
@@ -434,56 +475,105 @@ value without further justification.
 
 ---
 
-## OPEN ISSUE — must be settled before M5
+## RESOLVED — the supply-air limit
 
-**The HVAC has no supply-air rate limit, and the baseline controller design is
-now the decisive choice for the headline result.**
+**Was:** the model applied rated capacity directly to the air node as sensible
+power, permitting 13.3 K/min of air cooling. A bang-bang thermostat therefore
+oscillated for a numerical reason rather than a physical one, which would have
+made any M5 controller comparison a straw man.
 
-The model applies rated cooling capacity directly to the air node as sensible
-power. With `C_air = 0.181 MJ/K` and 40 kW, that permits an unopposed air
-cooling rate of **13.3 K/min**. Combined with a 2-minute actuator dead time, a
-bang-bang thermostat overshoots hard and enters a large limit cycle.
+**Fix:** cooling is now delivered through a finite air stream at a bounded
+supply temperature:
 
-Measured on a full Cairo–Alexandria run (15 Jul 2024, 08:00, full load):
+```
+Q_cool_max(T_air) = min( rated_capacity, m_dot_supply · c_p · (T_air − T_supply_min) )
+```
 
-- Baseline sits **1.35 K below setpoint on average**, and **72 of 166 minutes
-  fall outside the ±2 K comfort band**
-- Worst station excursion above setpoint is only **+1.73 K** — inside the band
-- So **the controller's own oscillation is larger than the station disturbances
-  it is supposed to be struggling with**
+Authority is now **state-dependent** — full during pull-down, tapering as the
+cabin approaches supply temperature:
 
-A real unit cannot behave this way. Delivering 40 kW through a realistic
-recirculation flow would need supply air 24–40 K below cabin temperature:
-
-| Airflow | Implied `UA` | ΔT needed for 40 kW |
+| `T_air` | Deliverable cooling | vs rated |
 |---|---|---|
-| 3000 m³/h | 1005 W/K | 39.8 K |
-| 4000 m³/h | 1340 W/K | 29.9 K |
-| 5000 m³/h | 1675 W/K | 23.9 K |
+| ≥35 °C | 40.0 kW | 100% |
+| 30 °C | 32.2 kW | 80% |
+| **26 °C (setpoint)** | **25.7 kW** | **64%** |
+| 20 °C | 16.1 kW | 40% |
+| 10 °C | 0 kW | 0% |
 
-Real supply air is around 10–14 °C, so the true sensible delivery into the air
-node is rate-limited well below the rated figure. Rated capacity also includes
-latent load and fresh-air pre-cooling, so it was never a pure sensible number.
+Measured effect on the baseline over a full Cairo–Alexandria run:
 
-**Why this must not be ignored:** if M5 compares a predictive controller against
-a bang-bang baseline that oscillates for a modelling reason rather than a
-physical one, the result will look excellent for the wrong reason. That is a
-straw-man baseline, and it is exactly the kind of thing a Siemens engineer would
-find in questioning.
+| | Before | After |
+|---|---|---|
+| Mean error vs setpoint | −1.35 K | **+0.01 K** |
+| Worst overcooling | ≈ −5.3 K | **−2.82 K** |
+| Minutes outside ±2 K band | 72/166 | **38/166** |
+| Energy | 16.25 kWh | 14.58 kWh |
 
-**Options for M5, in order of preference:**
+The systematic overcooling is gone. Applied to both the command *and* the lag
+output — the lag state otherwise carries an old high command forward as the
+cabin cools and the stream can no longer support it.
 
-1. Add a supply-air flow limit to the actuator (a rate cap on delivered sensible
-   power). Most physical, roughly 20 lines, and makes both controllers fairer.
-2. Use a staged or modulating baseline (real rail HVAC commonly stages
-   compressors rather than running pure on/off), which removes most of the
-   artificial oscillation without changing the plant model.
-3. Keep bang-bang but state plainly that the baseline is unmodulated and that
-   part of the measured gain comes from modulation rather than anticipation.
+### Consequence: the decomposition became measurable
 
-Option 1 plus 2 is the honest combination. Whatever is chosen, the reported
-result must separate *how much comes from anticipation* from *how much comes
-from simply modulating better*.
+Before the fix, the door/passenger decomposition returned doors-only as *larger*
+than doors-plus-passengers, which is impossible. It is now monotonic and valid:
+
+| Contribution | Worst excursion | Energy |
+|---|---|---|
+| Neither (weather only) | +1.94 K | 6.49 kWh |
+| Doors only | +2.74 K | 6.92 kWh |
+| Passengers only | +3.61 K | 14.22 kWh |
+| Both | +3.73 K | 14.56 kWh |
+
+**Passengers dominate both energy (+7.65 kWh vs doors' +0.34 kWh) and peak
+excursion.** This supersedes an earlier claim that the station spike was
+door-dominated — that came from an instantaneous comparison which ignored the
+fact that doors are open only 13% of the journey. It is a better result for the
+project than the old one: the dominant disturbance is the one the timetable can
+actually predict.
+
+### Consequence: the baseline choice still matters, and must be stated
+
+With the plant fixed, the remaining oscillation is physical. But it still
+depends heavily on how the baseline modulates:
+
+| Baseline | Mean | Swing | Outside band | Energy |
+|---|---|---|---|---|
+| On/off | +0.01 K | 6.03 K | 38/166 | 14.58 kWh |
+| 2-stage | −0.05 K | 6.03 K | 37/166 | 14.64 kWh |
+| **Modulating** | +0.34 K | 5.26 K | **22/166** | **14.12 kWh** |
+
+Staging barely helps; proportional modulation nearly halves the time outside
+band. **M5 should compare against the modulating baseline**, otherwise a large
+part of any measured gain is just modulation rather than anticipation. If the
+on/off baseline is also reported, the split must be stated explicitly.
+
+### What the worst excursion actually is
+
+An intermediate hypothesis — that the peak was capacity-limited and therefore
+identical across baselines — was **wrong**, and worth recording. The HVAC never
+saturates on a Cairo day (0 of 166 minutes at its authority limit). The peak is
+at **minute 2**, the origin boarding at Cairo Ramses: 68 passengers arrive at
+once against a 2-minute actuator dead time.
+
+Adding 30 minutes of pre-conditioning (an empty train standing at the platform
+with HVAC running, which is what really happens) reduces it from +3.73 K to
++3.21 K but does not remove it — because it is not an artifact. Boarding-rate
+literature gives ~35 s for 40 passengers per door, so 68 passengers really do
+board in about a minute; resolving the exchange at arrival is a fair
+approximation for a mainline coach.
+
+Genuine excursions, modulating baseline, with pre-conditioning:
+
+| Minute | Excursion | Where |
+|---|---|---|
+| 2 | +3.21 K | Cairo Ramses, origin boarding |
+| 82 | +2.77 K | Tanta |
+| 152 | +2.58 K | running |
+
+**Both exceed the ±2 K comfort band.** The premise holds — but note it took a
+corrected plant model and a corrected measurement to establish it, and the
+earlier version of this claim did not survive scrutiny.
 
 ---
 
@@ -545,4 +635,8 @@ more than the final numbers.
 | `interior_mass_capacity_j_k = 1.6e6` | A bare guess at 37% of a mass budget, with no rationale | Rebuilt from the budget (2.8 MJ/K), and swept to show it barely matters |
 | Door infiltration as a per-stop total | Divided by the route's mean dwell, so editing one station's timetable changed `door_ua` by −36% at *every* station | Restated as a rate while open, decoupling physics from schedule; regression test added |
 | M3 station-disturbance measurement | Measured temperature rise from wherever the cabin happened to sit. A badly tuned controller was overcooling ~4 K, so most of the "rise" was recovery, not disturbance — the same confounding as the M2 boarding test | Re-measured as excursion *above setpoint* under a baseline that actually holds setpoint |
-| M3 door-vs-passenger decomposition | Returned doors-only (+2.65 K) as *larger* than doors-plus-passengers (+2.26 K), which is impossible for a monotonic system. The bang-bang limit cycle swamped the disturbance being measured | Discarded as invalid. Superseded by the open issue above — the decomposition cannot be measured until the baseline stops oscillating for modelling reasons |
+| M3 door-vs-passenger decomposition | Returned doors-only (+2.65 K) as *larger* than doors-plus-passengers (+2.26 K), which is impossible for a monotonic system. The bang-bang limit cycle swamped the disturbance being measured | Fixed by the supply-air limit. Now monotonic and valid, and it reverses the earlier conclusion: passengers dominate, not doors |
+| HVAC delivered rated capacity as sensible power | Permitted 13.3 K/min of air cooling, so the baseline oscillated numerically rather than physically | Supply-air path added: authority is bounded by `ṁ·c_p·(T_air − T_supply_min)` and is state-dependent |
+| "40 kW is at the top of the commercial range" | Based on a 23–32 kW source. A better reference gives 12–15 tons (42–53 kW) for an 85 ft coach, making 40 kW mid-to-low | Corrected in the HVAC section |
+| "Station spike is door-dominated" | An instantaneous comparison that ignored doors being open only 13% of the journey | Superseded by the valid decomposition: passengers dominate energy 22× over and peak excursion too |
+| "The peak excursion is capacity-limited" | Hypothesised because all three baselines shared an identical +3.73 K max. Wrong — the HVAC never saturates (0 of 166 min). The peak was the origin boarding against the actuator dead time | Recorded rather than quietly dropped, because the hypothesis was tested and falsified |

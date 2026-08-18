@@ -100,7 +100,15 @@ C_mass · dT_mass/dt = hA·(T_air − T_mass)
 | `Q_solar` | measured GHI × glazing area × SHGC |
 | `Q_inf` | fresh-air mass flow × `c_p` × ΔT |
 | `Q_door` | step infiltration during station dwell |
-| `Q_hvac` | actuator output — dead time, first-order lag, capacity limit, COP(`T_out`) |
+| `Q_hvac` | actuator output — dead time, first-order lag, **supply-air limit**, COP(`T_out`) |
+
+**The actuator is supply-air limited, not simply capacity limited.** Rated capacity cannot be dumped into the cabin air as sensible power — it arrives through a finite air stream that cannot be colder than the coil allows:
+
+```
+Q_cool_max(T_air) = min( rated,  ṁ_supply · c_p · (T_air − T_supply_min) )
+```
+
+Authority is therefore **state-dependent**: 40 kW during pull-down, **25.7 kW at setpoint**, zero at supply temperature. Without this the model permitted 13.3 K/min of air cooling, and the baseline oscillated for a numerical rather than a physical reason — which would have made the M5 comparison a straw man. Fixing it removed the systematic overcooling (mean error −1.35 K → +0.01 K) and cut time outside the comfort band from 72/166 minutes to 38/166.
 
 **On the time constant — the most important design decision in this project.**
 
@@ -150,7 +158,9 @@ The time-constant test is the one that matters most: if the simulator disagrees 
 
 **Done when:** 39 occupancy tests pass — the route empties at the terminus and occupancy stays non-negative at every load factor including 0 and 1.3; the base pattern reproduces the config exactly at load factor 1.0; doors open only while stopped; and the lookahead features lead the boarding event they describe (without which the controller has nothing to anticipate).
 
-> **What M3 found.** Two problems, both now recorded in [`docs/PARAMETERS.md`](docs/PARAMETERS.md). First, door infiltration was expressed as a per-stop total divided by the route's mean dwell — so editing one station's timetable moved `door_ua` by 36% at *every* station. Fixed by restating it as a rate. Second, and more important: **the bang-bang baseline's own oscillation is larger than the station disturbances it faces** (72 of 166 minutes outside the comfort band, against a worst station excursion of +1.73 K). That traces to the actuator having no supply-air rate limit. It is written up as an open issue that must be settled before M5, because comparing against a baseline that oscillates for a modelling reason rather than a physical one would be a straw man.
+> **What M3 found, and what it forced.** Door infiltration was expressed as a per-stop total divided by the route's mean dwell — so editing one station's timetable moved `door_ua` by 36% at *every* station. Fixed by restating it as a rate. More seriously, the baseline's own oscillation turned out to be larger than the station disturbances it faced, which traced back to the actuator having no supply-air limit. That was fixed in M2 before proceeding (see above), and it **reversed one of our conclusions**: with a valid measurement, passengers dominate the disturbance (+7.65 kWh) rather than doors (+0.34 kWh). That is a better result for the project than the one it replaced — the dominant disturbance is the one the timetable can actually predict. Full detail in [`docs/PARAMETERS.md`](docs/PARAMETERS.md).
+
+**Cross-layer tests.** `tests/test_integration.py` checks the seams between M1, M2 and M3, which is where most bugs have actually lived: that supply air exceeds fresh air, that the unit still holds the comfort band at the hottest measured conditions *given state-dependent authority*, that the control horizon covers the actuator delay, that 1-minute logging resolves the fast mode, and that every service × city combination runs without going unphysical. Two findings are locked in as tests — that passengers dominate doors, and that the disturbance decomposition is monotonic (it was not, before the supply-air fix).
 
 ---
 

@@ -119,8 +119,32 @@ hvac:
   # full solar is 33-35 kW. An undersized unit would make the M5 controller
   # comparison meaningless exactly when it matters most, because both
   # controllers would sit pinned at the capacity limit.
-  cooling_capacity_w: 40000.0        # [ASSUMPTION] Hot-climate spec, ~20% margin on peak load
+  cooling_capacity_w: 40000.0        # [TYPICAL] Rail references quote 12-15 tons of
+                                     # refrigeration (42-53 kW) for an 85 ft coach, so
+                                     # 40 kW is mid-to-low for this vehicle, not high.
   heating_capacity_w: 25000.0        # [TYPICAL] Rarely used in this climate
+
+  # SUPPLY-AIR PATH -- the constraint that makes the actuator physical.
+  #
+  # Rated capacity cannot be dumped into the cabin air as sensible power. It is
+  # delivered through a finite air stream that cannot be colder than the coil
+  # allows, so the achievable cooling depends on how hot the cabin currently is:
+  #
+  #     Q_cool_max(T_air) = m_dot_supply * c_p * (T_air - T_supply_min)
+  #
+  # Without this the model permitted 13.3 K/min of air cooling, and a bang-bang
+  # thermostat oscillated for a numerical reason rather than a physical one --
+  # which would have made any controller comparison a straw man.
+  #
+  # Rail HVAC supplies 20-30% outside air at design conditions. Fresh air at
+  # design load is 15 m3/h/pax x 80 = 1200 m3/h, which at ~25% implies a total
+  # supply of ~4800 m3/h. An independent source quotes exactly 1200 m3/h for a
+  # 24 m intercity coach with 80 passengers at +45 C, which is a genuine
+  # cross-check on the fresh-air figure.
+  supply_air_m3_h: 4800.0            # [TYPICAL] Fresh air / 0.25 outside-air fraction
+  supply_air_min_temp_c: 10.0        # [ASSUMPTION] Coil limit; colder risks frost and
+                                     # draught complaints
+  supply_air_max_temp_c: 45.0        # [ASSUMPTION] Heating-side equivalent
   cop_nominal: 2.8                   # [TYPICAL] Design-point coefficient of performance
   cop_degradation_per_k: 0.04        # [ASSUMPTION] COP falls as outdoor temperature rises
   cop_reference_t_out_c: 30.0        # [ASSUMPTION] Reference point for the degradation curve
