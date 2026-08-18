@@ -819,7 +819,13 @@ range, not because of a bias. Corrected here rather than left overstated.
 Found by testing M4's saved model against a **live**, minute-by-minute
 simulation loop rather than only against the pre-built features table —
 specifically, by driving it with the plain reactive thermostat from M2/M3
-instead of the `StochasticController` it was trained under.
+instead of the `StochasticController` it was trained under. That live-testing
+capability was originally a throwaway diagnostic script; it is now permanent,
+tested infrastructure (`LiveFeatureBuilder` in `src/features.py`) precisely
+*because* this investigation showed M5 would need it and that hand-rolling it
+twice would be a real risk. This section documents what that infrastructure
+found, not a gap in the infrastructure itself — the gap it exposed is in the
+training distribution, not in whether M5 can call the model correctly.
 
 **The headline result (test MAE 3.780 °C vs persistence 4.837 °C, +21.8%) is
 real and reproducible** — confirmed across 3 independently regenerated 30k-row

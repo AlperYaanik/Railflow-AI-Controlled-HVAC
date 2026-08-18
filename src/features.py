@@ -112,6 +112,89 @@ def add_features(df: pd.DataFrame, cfg: dict | None = None, horizon_min: int | N
     return out
 
 
+class LiveFeatureBuilder:
+    """Builds the same feature row add_features() would, one minute at a
+    time, for a controller (M5) driving the simulator live.
+
+    WHY THIS EXISTS: add_features() operates on a whole finished DataFrame --
+    it can shift forward and backward because every row's past and future are
+    already on disk. A live controller has neither: only the history
+    accumulated so far, plus whatever lookahead quantities the caller can
+    independently supply (timetable, weather forecast -- see the module
+    docstring on why those are legitimate). Without ONE shared implementation
+    of "how do you turn accumulated history into a feature row", a live
+    controller would have to reconstruct this by hand, and a live-vs-batch
+    mismatch would be invisible: it would not crash, it would just quietly
+    feed the model rows it was never validated against.
+
+    Verified byte-for-byte equal to add_features() on identical trajectories
+    in tests/test_features.py -- that test is what makes this class
+    trustworthy, not the implementation alone.
+
+    Usage: one instance per scenario/journey. Call step() every minute with
+    the same raw quantities data_generator.py records; it returns a
+    single-row DataFrame ready for `booster.predict(...)`, or None for the
+    first `max(LAG_MINUTES + [TREND_LAG_MIN])` minutes, while there isn't
+    enough history yet -- exactly the rows add_features() itself drops.
+    """
+
+    def __init__(self, cfg: dict, city: str, direction: str, pattern: str,
+                 load_factor: float, depart_hour: float):
+        self.cfg = cfg
+        self.city = city
+        self.direction = direction
+        self.pattern = pattern
+        self.load_factor = load_factor
+        self.depart_hour = depart_hour
+        self.halflife = max(cfg["hvac"]["tau_act_min"], 0.1)
+        self.max_lag = max(LAG_MINUTES + [TREND_LAG_MIN])
+
+        self._t_air_history: list[float] = []
+        self._q_actual_history: list[float] = []
+        self.minute = -1
+
+    def step(
+        self, *, t_air_c: float, t_mass_c: float, t_out_c: float, ghi_w_m2: float,
+        n_pax: float, door_open: bool, setpoint_c: float, q_hvac_actual_w: float,
+        time_to_next_station_min: float, expected_boarding: float,
+        t_out_fcst_h: float, ghi_fcst_h: float,
+    ) -> pd.DataFrame | None:
+        """Call once per minute, in order. Returns None until there's enough
+        history (mirrors add_features()'s own drop at the start of a scenario).
+        """
+        self.minute += 1
+        self._t_air_history.append(t_air_c)
+        self._q_actual_history.append(q_hvac_actual_w)
+
+        if self.minute < self.max_lag:
+            return None
+
+        hour_of_day = (self.depart_hour + self.minute / 60.0) % 24.0
+        ewma = pd.Series(self._q_actual_history).ewm(halflife=self.halflife).mean().iloc[-1]
+
+        row = {
+            "t_air_c": t_air_c, "t_mass_c": t_mass_c, "t_out_c": t_out_c,
+            "ghi_w_m2": ghi_w_m2, "n_pax": n_pax, "door_open": door_open,
+            "setpoint_c": setpoint_c, "error_c": t_air_c - setpoint_c,
+            "t_air_trend_rate": (t_air_c - self._t_air_history[-1 - TREND_LAG_MIN]) / TREND_LAG_MIN,
+            "time_to_next_station_min": time_to_next_station_min,
+            "expected_boarding": expected_boarding,
+            "t_out_fcst_h": t_out_fcst_h, "ghi_fcst_h": ghi_fcst_h,
+            "hour_sin": np.sin(2 * np.pi * hour_of_day / 24.0),
+            "hour_cos": np.cos(2 * np.pi * hour_of_day / 24.0),
+            "q_hvac_actual_w": q_hvac_actual_w, "q_actual_ewma": ewma,
+            "city": self.city, "direction": self.direction,
+            "pattern": self.pattern, "load_factor": self.load_factor,
+        }
+        for lag in LAG_MINUTES:
+            row[f"q_actual_lag_{lag}"] = self._q_actual_history[-1 - lag]
+
+        out = pd.DataFrame([row])[list(FEATURE_COLUMNS)]
+        for col in CATEGORICAL_COLUMNS:
+            out[col] = out[col].astype("category")
+        return out
+
+
 if __name__ == "__main__":
     from src.config import DATA_DIR
 
