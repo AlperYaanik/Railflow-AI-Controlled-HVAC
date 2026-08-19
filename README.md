@@ -36,14 +36,16 @@ Tests and scripts that need weather/data/model skip with an actionable message
 python -m pytest tests/ -q
 ```
 
-229 tests. Physics (free-float convergence, derived time constants, actuator
+249 tests. Physics (free-float convergence, derived time constants, actuator
 behaviour, numerical convergence), timetable/occupancy invariants, feature
 engineering (leakage checks, batch/live equivalence), the forecaster
 (chronological split, beats persistence), the two controllers (regression
 guards for two real bugs found during development — see `docs/PARAMETERS.md`),
-the M5 comparison harness, the M6 actuator-lag sweep, and the M7 Streamlit
+the M5 comparison harness, the M6 actuator-lag sweep, the M7 Streamlit
 demo (headless `AppTest`, including that a missing model/dataset/weather
-file each produce a clean actionable error rather than a crash).
+file each produce a clean actionable error rather than a crash), and the
+M8 serial protocol (frame encode/decode, range validation, checksum
+corruption, and a real send/receive round trip over a virtual loopback).
 
 ## Look at the model
 
@@ -63,6 +65,37 @@ consequences of the declared physical parameters (`C_air`, `C_mass`, `UA`,
 actuator lag (`tau_act`) is genuinely unknown and is never asserted either —
 see M6.
 
+## Run the live demo
+
+```bash
+streamlit run src/app.py
+```
+
+Opens both controllers running side by side on the same 23 held-out
+test-split scenarios `compare_controllers.py` uses — pick a journey, scrub
+or auto-play through it, compare energy and comfort. For a plain-English
+walkthrough of what's on screen (not written for developers), see
+`docs/USER_MANUAL.md`. If the live demo can't be shown on presentation day,
+`docs/demo_recording_script.md` is the fallback recording script.
+
+## Hardware handover (M8)
+
+This project's own compute never touches the actuator directly — it sends
+one outbound command over UART. The frame format, every field's units and
+range, and exactly what the board side must do with it (including link-loss
+behaviour) is fully specified in `docs/serial_protocol.md`, written so the
+board can be implemented from that document alone. `src/serial_bridge.py`
+is the reference sender:
+
+```bash
+python -m src.serial_bridge   # sends one frame over pyserial's built-in
+                               # in-memory loopback -- no real port, no
+                               # virtual-COM driver, nothing hardware-specific
+```
+
+Swap `"loop://"` for a real port name (`"COM3"`, `"/dev/ttyUSB0"`) to send
+to actual hardware; nothing else about the call changes.
+
 ## Layout
 
 | Path | What it is |
@@ -79,9 +112,14 @@ see M6.
 | `src/evaluate.py` | Drives a controller through a real scenario minute by minute; scores energy + comfort |
 | `src/compare_controllers.py` | The M5 comparison harness — on/off headline and a feedforward-contribution ablation |
 | `src/sweep_tau_act.py`, `src/plot_tau_act_sweep.py` | M6 — sweeps the unknown actuator lag rather than asserting a value |
-| `tests/` | Physics, occupancy, features, training, controllers, and cross-layer integration tests |
+| `src/app.py` | M7 — Streamlit live demo, runs the same simulator with both controllers side by side |
+| `src/serial_bridge.py` | M8 — the UART sender to whoever owns the board; validated against pyserial's built-in loopback |
+| `tests/` | Physics, occupancy, features, training, controllers, the app, the serial bridge, and cross-layer integration tests |
 | `ROADMAP.md` | Milestones M0–M8, objective-driven |
 | `docs/PARAMETERS.md` | **Why every coefficient has the value it has, plus a corrections log** |
+| `docs/serial_protocol.md` | The M8 handover document — full frame spec for the board side, no source reading required |
+| `docs/USER_MANUAL.md` | Plain-English guide to running the live demo, for a non-developer audience |
+| `docs/demo_recording_script.md` | Timed walkthrough script for the M7 fallback recording |
 
 ## What the numbers do and do not claim
 
@@ -117,9 +155,19 @@ finding (comfort robustness to that unknown) in its place. Full results and
 the reasoning behind every correction are in `ROADMAP.md` and
 `docs/PARAMETERS.md`.
 
-**Next:** M7 (a live Streamlit demo running the same simulator) and M8
-(handover — the UART protocol document for the hardware side, and a
-validated serial bridge).
+**M7 core complete, one manual step outstanding.** The live Streamlit demo
+runs end to end, verified in a real browser and covered by headless
+`AppTest` tests, including that a missing model/dataset/weather file each
+produce a clean actionable error rather than a crash. **Not yet done:** the
+screen-recording fallback itself still needs a person to record it —
+`docs/demo_recording_script.md` has the exact walkthrough to follow.
+
+**M8 complete.** `docs/serial_protocol.md` fully specifies the one-way
+UART command frame (format, units, ranges, cadence, and required
+receiver/link-loss behaviour) for whoever implements the board side, from
+the document alone. `src/serial_bridge.py` is the reference sender,
+validated round-trip against pyserial's built-in in-memory loopback — no
+hardware or virtual-COM driver needed to verify it.
 
 ## License
 
