@@ -134,4 +134,81 @@ def test_no_model_shows_an_actionable_error_not_a_crash(monkeypatch, require_wea
     assert not at.exception
     assert any("no trained model" in e.value.lower() for e in at.get("error"))
     st.cache_resource.clear()  # don't leak the patched empty result to tests after this one
-    st.cache_resource.clear()  # don't leak the patched empty result to tests after this one
+
+
+def test_missing_scenario_data_shows_an_actionable_error_not_a_crash(
+    monkeypatch, require_model, tmp_path,
+):
+    """If data/scenarios_raw.parquet is missing -- weather fetched and the
+    model trained, but `python -m src.data_generator` never run, or its
+    output pruned by a partial copy -- the app must say so and stop cleanly,
+    the same guarantee the missing-model test above locks in.
+
+    Found by code inspection: unlike the model check (`if booster is None:
+    st.error(...); st.stop()`), get_scenarios() had no equivalent guard, so
+    this path would crash with a raw FileNotFoundError from deep inside
+    pandas.read_parquet -- confirmed by reproducing it directly (patching
+    DATA_DIR and calling held_out_test_scenarios() outside Streamlit
+    entirely) before this test or the fix existed.
+
+    Patches src.compare_controllers.DATA_DIR, not src.app's or src.config's:
+    held_out_test_scenarios() looks up DATA_DIR as a module global in
+    src.compare_controllers's own namespace at call time, so that's the one
+    binding that actually affects it -- same reasoning the MODEL_PATH patch
+    above already relies on for src.train.
+
+    get_scenarios() is @st.cache_data with no arguments, a single slot
+    shared across this whole process -- without clearing it, an earlier
+    test's successfully-cached real scenario table would still come back
+    here regardless of the DATA_DIR patch, and this test would pass for the
+    wrong reason (see the analogous get_booster()/cache_resource note
+    above).
+    """
+    import streamlit as st
+
+    import src.compare_controllers as compare_controllers_module
+
+    st.cache_data.clear()
+    monkeypatch.setattr(compare_controllers_module, "DATA_DIR", tmp_path)
+    at = AppTest.from_file("src/app.py", default_timeout=60).run()
+    assert not at.exception
+    assert any("scenarios_raw.parquet" in e.value for e in at.get("error"))
+    st.cache_data.clear()  # don't leak the patched empty result to tests after this one
+
+
+def test_missing_weather_data_shows_an_actionable_error_not_a_crash(
+    monkeypatch, require_model, tmp_path,
+):
+    """If a weather_{city}_summer.csv is missing -- the model trained on an
+    older weather cache that was since deleted, or a partial copy that kept
+    data/scenarios_raw.parquet but not data/weather_*.csv -- run_both() must
+    say so and stop cleanly rather than crash raw, same as the two cases
+    above.
+
+    Patches src.evaluate.DATA_DIR, not src.app's: run_controller() (called
+    by run_both()) looks up DATA_DIR as a module global in src.evaluate's
+    own namespace, independent of the src.compare_controllers.DATA_DIR
+    binding the scenarios-file test above patches -- confirmed these two
+    are genuinely separate bindings (each module did its own `from
+    src.config import DATA_DIR`), so patching one leaves the other, and this
+    test leaves get_scenarios() reading the real, present
+    scenarios_raw.parquet -- only the weather read fails here.
+
+    run_both() is @st.cache_data keyed on its scenario arguments; the
+    default scenario this test exercises is the same one other tests in
+    this file already ran successfully, so without clearing the cache here
+    too, the earlier real result would mask this patch exactly like the
+    get_scenarios() case above.
+    """
+    import streamlit as st
+
+    import src.evaluate as evaluate_module
+
+    st.cache_data.clear()
+    monkeypatch.setattr(evaluate_module, "DATA_DIR", tmp_path)
+    at = AppTest.from_file("src/app.py", default_timeout=60).run()
+    assert not at.exception
+    # Not a hardcoded city -- the default (first) scenario's city depends on
+    # scenario_id ordering, not something this test should assume.
+    assert any("weather_" in e.value and "_summer.csv" in e.value for e in at.get("error"))
+    st.cache_data.clear()  # don't leak the patched empty result to tests after this one
