@@ -9,6 +9,12 @@ requests
 # Forecasting model
 lightgbm
 
+# M9 model benchmark only -- not used by the shipped forecaster or the live
+# demo, just src/benchmark_models.py's comparison against other model families
+scikit-learn
+xgboost
+catboost
+
 # Plots and live demo
 matplotlib
 streamlit
