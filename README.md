@@ -36,12 +36,14 @@ Tests and scripts that need weather/data/model skip with an actionable message
 python -m pytest tests/ -q
 ```
 
-223 tests. Physics (free-float convergence, derived time constants, actuator
+229 tests. Physics (free-float convergence, derived time constants, actuator
 behaviour, numerical convergence), timetable/occupancy invariants, feature
 engineering (leakage checks, batch/live equivalence), the forecaster
 (chronological split, beats persistence), the two controllers (regression
 guards for two real bugs found during development — see `docs/PARAMETERS.md`),
-the M5 comparison harness, and the M6 actuator-lag sweep.
+the M5 comparison harness, the M6 actuator-lag sweep, and the M7 Streamlit
+demo (headless `AppTest`, including that a missing model/dataset/weather
+file each produce a clean actionable error rather than a crash).
 
 ## Look at the model
 

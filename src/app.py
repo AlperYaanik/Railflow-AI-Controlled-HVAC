@@ -88,7 +88,21 @@ if booster is None:
     st.error(f"No trained model at {MODEL_PATH}. Run `python -m src.train` first.")
     st.stop()
 
-scenarios = get_scenarios()
+# get_scenarios()/run_both() below hit data/scenarios_raw.parquet and
+# data/weather_{city}_summer.csv directly (via held_out_test_scenarios()/
+# run_controller()) with no existence check of their own -- same class of
+# gap the booster check above already closes for the model file, applied to
+# the two setup steps ahead of it (see README's Setup section: weather,
+# then data_generator, then train). Caught by code inspection, not a user
+# report; confirmed by reproducing the raw FileNotFoundError before adding
+# this guard (see tests/test_app.py's two missing-data tests).
+try:
+    scenarios = get_scenarios()
+except FileNotFoundError as e:
+    st.error(f"Missing data file: {e.filename}. Run `python -m src.weather` "
+             f"and `python -m src.data_generator` first.")
+    st.stop()
+
 scenarios = scenarios.assign(
     label=scenarios.apply(
         lambda r: f"#{r.scenario_id} — {r.city}, {r.date}, {r.depart_hour:.1f}h, "
@@ -105,9 +119,13 @@ st.sidebar.caption(
 choice = st.sidebar.selectbox("Pick a journey", scenarios["label"], index=0)
 row = scenarios.loc[scenarios["label"] == choice].iloc[0]
 
-thermo_traj, antic_traj, thermo_score, antic_score = run_both(
-    row.city, row.date, row.depart_hour, row.direction, row.pattern, row.load_factor
-)
+try:
+    thermo_traj, antic_traj, thermo_score, antic_score = run_both(
+        row.city, row.date, row.depart_hour, row.direction, row.pattern, row.load_factor
+    )
+except FileNotFoundError as e:
+    st.error(f"Missing data file: {e.filename}. Run `python -m src.weather` first.")
+    st.stop()
 
 n_minutes = len(thermo_traj)
 st.sidebar.divider()
