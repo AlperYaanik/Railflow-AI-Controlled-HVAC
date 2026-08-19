@@ -19,6 +19,16 @@ No time constant is asserted anywhere. Both are consequences of C and UA
 values declared in config/cabin_params.yaml — see src/config.py.
 
 Sign convention: q_hvac > 0 heats, q_hvac < 0 cools.
+
+M9 adds a THIRD, separate state: cabin humidity ratio (CabinState.w_air_g_kg),
+a simple moisture balance (passenger generation + ventilation/door exchange)
+alongside the two temperature nodes -- deliberately NOT a fourth coupled node
+in the network above, since moisture doesn't buffer into interior mass the
+way heat does at the timescales this project cares about. Deliberately does
+NOT model coil dehumidification (see step()'s comment right before it builds
+StepResult) -- that needs an Apparatus Dew Point/Bypass Factor coil model
+this project doesn't have the numbers or time budget for. Disclosed as an
+upper bound during active cooling, not silently ignored.
 """
 
 from collections import deque
@@ -32,6 +42,7 @@ from src.config import (
     load_config,
     ventilation_ua,
 )
+from src.weather import humidity_ratio, relative_humidity_from_ratio
 
 SUBSTEP_S = 10.0
 """Internal integration step [s].
@@ -54,6 +65,12 @@ class CabinInputs:
     fan_on: bool = True
     """Supply fan state. Defaults on: a train in service ventilates continuously,
     whether or not cooling is called for."""
+    rh_out_pct: float = 50.0
+    """Outdoor relative humidity, for the moisture balance (see CabinState.w_air_g_kg).
+    Defaults to a neutral mid-range value so every existing caller that doesn't pass
+    it (M4-M8's data_generator.py/evaluate.py/tests) keeps working unchanged -- their
+    humidity output just won't reflect real weather until they're updated to pass the
+    weather CSV's actual rh_out_pct column, a deliberately separate follow-up (M9)."""
 
 
 @dataclass
@@ -62,11 +79,14 @@ class CabinState:
 
     t_air_c: float
     t_mass_c: float
+    w_air_g_kg: float
+    """Cabin air humidity ratio [g water / kg dry air]. See step()'s moisture
+    balance for what this does and, importantly, does NOT account for."""
     q_hvac_actual_w: float = 0.0
     _pipeline: deque = field(default_factory=deque, repr=False)
 
     def copy(self) -> "CabinState":
-        s = CabinState(self.t_air_c, self.t_mass_c, self.q_hvac_actual_w)
+        s = CabinState(self.t_air_c, self.t_mass_c, self.w_air_g_kg, self.q_hvac_actual_w)
         s._pipeline = deque(self._pipeline)
         return s
 
@@ -77,6 +97,11 @@ class StepResult:
 
     t_air_c: float
     t_mass_c: float
+    w_air_g_kg: float
+    rh_air_pct: float
+    """Cabin humidity, in both units step() computes it in and the one a human
+    reads. See step()'s moisture balance docstring for the upper-bound caveat
+    whenever the HVAC is actively cooling."""
     q_hvac_actual_w: float
     q_envelope_w: float
     q_ventilation_w: float
@@ -119,6 +144,17 @@ class CabinModel:
 
         tm = self.cfg["thermal_mass"]
         rho_cp = tm["air_density_kg_m3"] * tm["air_cp_j_kgk"]
+        self.air_cp = tm["air_cp_j_kgk"]
+
+        # Moisture balance (M9): cabin air mass, and passenger moisture
+        # generation converted from the existing latent_heat_w_per_pax via
+        # the latent heat of vaporization -- a unit conversion, not a new
+        # domain assumption (see config's comment on both numbers).
+        self.air_mass_kg = self.cfg["geometry"]["saloon_volume_m3"] * tm["air_density_kg_m3"]
+        self.moisture_gen_g_s_per_pax = (
+            self.pax_latent_w / tm["latent_heat_vaporization_j_kg"] * 1000.0
+        )
+        self.target_rh_pct = self.cfg["comfort"]["target_rh_pct"]
 
         hv = self.cfg["hvac"]
         self.cooling_capacity_w = hv["cooling_capacity_w"]
@@ -147,7 +183,13 @@ class CabinModel:
     # ---------------------------------------------------------------- helpers
 
     def initial_state(self, t_air_c: float, t_mass_c: float | None = None) -> CabinState:
-        return CabinState(t_air_c, t_air_c if t_mass_c is None else t_mass_c)
+        """Starts the cabin "in comfort" on humidity (target_rh_pct at t_air_c),
+        the same unjustified-further convention already used for t_air_c itself --
+        the caller picks a starting temperature with no further ceremony, so the
+        starting humidity ratio follows the same pattern rather than needing its
+        own new default-choosing logic."""
+        w0 = humidity_ratio(t_air_c, self.target_rh_pct)
+        return CabinState(t_air_c, t_air_c if t_mass_c is None else t_mass_c, w0)
 
     def cop_cooling(self, t_out_c: float) -> float:
         """Vapour-compression COP, degrading as outdoor temperature rises."""
@@ -263,6 +305,16 @@ class CabinModel:
         q_solar = inputs.ghi_w_m2 * self.solar_aperture
         q_fan = self.supply_fan_w if inputs.fan_on else 0.0
 
+        # Moisture balance (M9) -- deliberately simplified, see the note below
+        # the substep loop for exactly what this does and does not account for.
+        # Mass flow rates from the SAME UA figures the temperature balance
+        # already computed (UA = m_dot * c_p, so m_dot = UA / c_p) rather than
+        # a second, separately-derived ventilation/door model.
+        w_out_g_kg = humidity_ratio(inputs.t_out_c, inputs.rh_out_pct)
+        m_dot_vent_kg_s = ua_vent / self.air_cp
+        m_dot_door_kg_s = ua_door / self.air_cp
+        moisture_gen_g_s = inputs.n_pax * self.moisture_gen_g_s_per_pax
+
         q_env = q_vent = q_door = 0.0
         q_hvac = 0.0
 
@@ -281,20 +333,44 @@ class CabinModel:
             state.t_air_c += h * q_air / self.c_air
             state.t_mass_c += h * q_mass / self.c_mass
 
+            d_moisture = (
+                m_dot_vent_kg_s * (w_out_g_kg - state.w_air_g_kg)
+                + m_dot_door_kg_s * (w_out_g_kg - state.w_air_g_kg)
+                + moisture_gen_g_s
+            )
+            state.w_air_g_kg = max(0.0, state.w_air_g_kg + h * d_moisture / self.air_mass_kg)
+
             q_env += d_env * h
             q_vent += d_vent * h
             q_door += d_door * h
 
         # Latent load is carried by the coil (it costs energy) but does not
-        # drive air temperature — we deliberately do not model a humidity state.
-        # Only cooling dehumidifies, so latent load never applies to heating.
+        # drive air temperature -- unchanged from before M9. Only cooling
+        # dehumidifies, so latent load never applies to heating.
         cop = self.cop(inputs.t_out_c, heating=q_hvac > 0.0)
         coil_w = abs(q_hvac) + (q_latent if q_hvac < 0 else 0.0)
         compressor_w = coil_w / cop
 
+        # w_air_g_kg above tracks passenger + ventilation/door moisture, but
+        # -- same simplification the energy accounting already made, now
+        # stated where the number itself is visible -- deliberately WITHOUT
+        # a coil dehumidification term: doing that properly needs an
+        # Apparatus Dew Point / Bypass Factor coil model this project
+        # doesn't have the numbers or the time budget for (see ROADMAP.md's
+        # M9). The energy side already charges for passenger latent load as
+        # if the coil removes it (compressor_w above, unchanged); the
+        # humidity STATE doesn't reflect that removal. Net effect: whenever
+        # q_hvac < 0 (actively cooling), rh_air_pct below is an UPPER BOUND
+        # on real cabin humidity, not a corrected true value. Disclosed, not
+        # hidden -- the same honesty pattern as every other stated
+        # simplification in this project.
+        rh_air_pct = relative_humidity_from_ratio(state.t_air_c, state.w_air_g_kg)
+
         return StepResult(
             t_air_c=state.t_air_c,
             t_mass_c=state.t_mass_c,
+            w_air_g_kg=state.w_air_g_kg,
+            rh_air_pct=rh_air_pct,
             q_hvac_actual_w=q_hvac,
             q_envelope_w=q_env / dt_s,
             q_ventilation_w=q_vent / dt_s,
@@ -328,8 +404,9 @@ if __name__ == "__main__":
 
     # Free-float for 3 h at 45 C with a full coach, HVAC off.
     state = model.initial_state(24.0)
-    print("free-float, HVAC off, T_out 45 C, 73 pax:")
+    print("free-float, HVAC off, T_out 45 C / RH 30%, 73 pax:")
     for minute in range(1, 181):
-        r = model.step(state, CabinInputs(t_out_c=45.0, n_pax=73), dt_s=60.0)
+        r = model.step(state, CabinInputs(t_out_c=45.0, n_pax=73, rh_out_pct=30.0), dt_s=60.0)
         if minute in (5, 15, 30, 60, 120, 180):
-            print(f"  t={minute:3d} min  T_air {r.t_air_c:5.2f} C  T_mass {r.t_mass_c:5.2f} C")
+            print(f"  t={minute:3d} min  T_air {r.t_air_c:5.2f} C  T_mass {r.t_mass_c:5.2f} C  "
+                  f"RH_air {r.rh_air_pct:5.1f} %  (upper bound -- HVAC off here, so no dehumidification caveat applies)")

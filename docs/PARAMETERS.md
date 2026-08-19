@@ -87,6 +87,7 @@ Effective solar aperture: `22 × 0.45 × 0.5 = 4.95 m²`.
 |---|---|---|
 | `air_density_kg_m3` | 1.2 | High |
 | `air_cp_j_kgk` | 1005.0 | High |
+| `latent_heat_vaporization_j_kg` | 2.4545e6 | High — physical constant, not fitted |
 | `interior_mass_capacity_j_k` | 2.8e6 | **Low** |
 | `interior_surface_area_m2` | 250.0 | Low |
 | `internal_h_w_m2k` | 6.0 | Low |
@@ -239,9 +240,13 @@ events rather than crush loading.
 total), standard ASHRAE-style values.
 
 **Latent heat is deliberately not coupled to air temperature.** It is added to
-the coil load — it costs energy — but does not drive `T_air`, because modelling
-that properly needs a humidity state and full psychrometrics, which is out of
-budget.
+the coil load — it costs energy — but does not drive `T_air`. This was
+originally "because modelling humidity needs full psychrometrics, out of
+budget," full stop. M9 revisited that: a *full* coil model (Apparatus Dew
+Point, Bypass Factor — see the Supply Air section's citations) is still out
+of budget, but a **simplified moisture state, without the coil term, is not**
+— see "The M9 humidity model" below. `q_air`/`T_air` remain exactly as before;
+only a third, separate state (`w_air_g_kg`) was added.
 
 **This is justified by the climate, not by convenience.** Latent load from
 ventilation only exists where the outdoor humidity ratio *exceeds* the indoor
@@ -268,6 +273,37 @@ time, and in Cairo the majority of the time. The latent load is dominated by
   rather than glossed over.
 - The argument is **Egypt-specific**. It would not transfer to a coastal or
   monsoon route, and the model should not be presented as if it would.
+
+**The M9 humidity model.** `CabinState.w_air_g_kg` — a third state, evolved
+by a moisture balance in `CabinModel.step()`: passenger generation
+(`latent_heat_w_per_pax` converted through the newly-sourced
+`thermal_mass.latent_heat_vaporization_j_kg`, a unit conversion of a number
+this document already sourced, not a new assumption) plus ventilation/door
+exchange against real outdoor humidity via `weather.humidity_ratio()` — the
+exact function this section's table above already used to make the climate
+argument. **Deliberately no coil dehumidification term.** Whenever the HVAC
+is actively cooling, `rh_air_pct` is a disclosed upper bound, not a
+corrected true value — the energy accounting above still charges for
+passenger latent load as if the coil removes it; the humidity state doesn't
+credit that removal, because doing so correctly is exactly the Apparatus
+Dew Point/Bypass Factor complexity this project doesn't have the numbers
+for.
+
+**Tested, and the result changed the story.** A pre-build estimate (moisture
+only, temperature held artificially fixed) suggested boarding could push RH
+from 54.8% to 70.3% — over ISO 19659-2's 65% limit above. The real, built,
+properly-isolated model (same isothermal-style isolation as the boarding
+temperature test, extended to humidity — matching outdoor RH to the cabin's
+own starting RH so ventilation exchange starts at zero) shows something
+different: **absolute humidity ratio rises a real +1.94 g/kg (14.64→16.58),
+but RH itself only 55.0%→55.4%.** The reason is not a bug — it's that
+*temperature rises during the same boarding event*, and warmer air holds
+more moisture at the same RH%, so the temperature and humidity effects
+partially cancel in the RH reading even though the underlying moisture gain
+is real. Locked in as `tests/test_physics.py::test_boarding_raises_cabin_humidity_ratio`
+(asserting the rise is real and >1 g/kg, deliberately not pinning the exact
+figure) — worth stating plainly that the pre-build back-of-envelope number
+was a genuine upper bound, not a prediction that came true.
 
 ---
 
@@ -717,6 +753,7 @@ there, and `test_zero_tau_act_removes_the_lag` enforces the model side of it.
 | `sliding_t_out_low_c` / `high_c` | 20.0 / 40.0 | Low |
 | `sliding_setpoint_low_c` / `high_c` | 22.0 / 26.0 | Low |
 | `band_k` | 2.0 | Low |
+| `target_rh_pct` | 55.0 | Medium — ASHRAE-style, M9's humidity state anchor |
 
 EN 13129 defines interior temperature as a **sliding function of outdoor
 temperature** rather than a fixed setpoint — you do not hold 22 °C when it is

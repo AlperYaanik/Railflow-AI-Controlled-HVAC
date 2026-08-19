@@ -18,6 +18,7 @@ from src.config import (
     thermal_time_constant,
     ventilation_ua,
 )
+from src.weather import humidity_ratio, relative_humidity_from_ratio
 
 
 @pytest.fixture(scope="module")
@@ -627,3 +628,89 @@ def test_door_exchange_accumulates_with_dwell_length(cfg):
     long = sum(model.step(long_state, inputs, dt_s=60.0).q_door_w for _ in range(6))
 
     assert long > 2.0 * short, "tripling the dwell should let in substantially more heat"
+
+
+# --------------------------------------------------------------- humidity (M9)
+
+
+def test_initial_state_starts_at_the_configured_target_humidity(model):
+    """initial_state() seeds w_air_g_kg from comfort.target_rh_pct at whatever
+    t_air_c the caller chose -- the cabin starts 'in comfort' on humidity the
+    same unjustified-further way it already does on temperature."""
+    state = model.initial_state(24.0)
+    assert relative_humidity_from_ratio(24.0, state.w_air_g_kg) == pytest.approx(
+        model.target_rh_pct, abs=1e-6
+    )
+
+
+def test_humidity_free_floats_toward_outdoor_ratio(model):
+    """With HVAC off and nobody aboard, cabin humidity ratio must tend to the
+    outdoor value -- the moisture-balance analogue of
+    test_free_float_approaches_outdoor_temperature above, same discipline."""
+    w_out = humidity_ratio(40.0, 60.0)
+    state = model.initial_state(20.0)
+    for _ in range(600):
+        r = model.step(state, CabinInputs(t_out_c=40.0, rh_out_pct=60.0, n_pax=0), dt_s=60.0)
+    assert r.w_air_g_kg == pytest.approx(w_out, abs=0.5)
+
+
+def test_boarding_raises_cabin_humidity_ratio(model):
+    """Passenger moisture must move the cabin's humidity ratio within a dwell,
+    the humidity analogue of test_boarding_spike_is_visible_in_air_temperature.
+
+    Isolated the same way that test isolates the temperature signal -- there,
+    t_out_c is set equal to the STARTING t_air_c so the envelope/ventilation
+    terms start at zero and only passenger forcing kicks the system away from
+    equilibrium. Here, rh_out_pct is set equal to the cabin's own starting RH
+    (comfort.target_rh_pct) at that same t_out_c, so ventilation moisture
+    exchange starts at zero too -- otherwise an arbitrary outdoor/indoor RH
+    gap would dominate the result and the test would be measuring that
+    gap, not the passenger effect it's named for.
+
+    Actual measured rise at 68 pax / 8 min under this isolation: +1.94 g/kg
+    (14.64 -> 16.58). Asserting a materially looser bound (>1.0) rather than
+    pinning that exact figure -- this locks in "the effect is real and not
+    tiny," not a specific number that would make this test as brittle as an
+    exact-value regression pin for something that isn't meant to be one.
+    """
+    t_amb = 30.0
+    state = model.initial_state(t_amb)
+    w0 = state.w_air_g_kg
+    r = None
+    for _ in range(8):
+        r = model.step(state, CabinInputs(t_out_c=t_amb, n_pax=68, fan_on=False,
+                                           rh_out_pct=model.target_rh_pct), dt_s=60.0)
+    assert r.w_air_g_kg - w0 > 1.0, (
+        f"boarding raised humidity ratio only {r.w_air_g_kg - w0:.2f} g/kg over 8 min — "
+        "the disturbance is too muted for this to be worth modelling"
+    )
+
+
+def test_humidity_ratio_never_goes_negative(model):
+    """Extreme drying (very dry, very hot outdoor air) must floor at zero,
+    not overshoot into an unphysical negative humidity ratio -- the humidity
+    analogue of test_state_stays_finite_under_extreme_forcing above."""
+    state = model.initial_state(45.0)
+    for _ in range(2000):
+        r = model.step(state, CabinInputs(t_out_c=50.0, rh_out_pct=0.0, n_pax=0), dt_s=60.0)
+    assert r.w_air_g_kg >= 0.0
+
+
+def test_passenger_moisture_generation_is_independent_of_hvac_mode(model):
+    """Passengers exhale/perspire the same whether the HVAC is heating or
+    cooling -- only the ENERGY COST of removing that moisture is gated on
+    cooling (q_latent in step(), unchanged by M9), never the generation
+    itself. A heating scenario must still show a real humidity rise from
+    passengers, the same as test_no_latent_load_is_charged_during_heating
+    confirms for the energy side.
+    """
+    t_amb = 5.0
+    state = model.initial_state(t_amb)
+    w0 = state.w_air_g_kg
+    inputs = CabinInputs(t_out_c=t_amb, n_pax=68, fan_on=False,
+                          rh_out_pct=model.target_rh_pct, q_hvac_cmd_w=1e6)  # commanding heat
+    r = None
+    for _ in range(8):
+        r = model.step(state, inputs, dt_s=60.0)
+    assert r.q_hvac_actual_w > 0.0, "sanity check: this scenario should actually be heating"
+    assert r.w_air_g_kg > w0, "passengers should still add moisture while the HVAC heats"

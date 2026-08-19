@@ -60,6 +60,14 @@ thermal_mass:
   # to it on the timescale we care about (seats, panels, floor, luggage racks).
   air_density_kg_m3: 1.2            # [TYPICAL] Dry air near 20 C
   air_cp_j_kgk: 1005.0              # [TYPICAL] Specific heat of air at constant pressure
+  latent_heat_vaporization_j_kg: 2.4545e+6 # [TYPICAL] Water, at ~25 C (typical cabin operating
+                                     # range). ASHRAE's standard psychrometric reference is
+                                     # 2501 kJ/kg at 0 C with a -1.86 kJ/kg per C adjustment:
+                                     # 2501 - 1.86*25 = 2454.5 kJ/kg = 2454500 J/kg. Used only
+                                     # by CabinModel's simplified moisture balance (M9) to
+                                     # convert occupancy.latent_heat_w_per_pax into a moisture
+                                     # mass rate -- not a new domain assumption, a unit
+                                     # conversion of a number this project already has.
   # Interior mass thermally coupled to the air. Built from a mass budget
   # rather than guessed:
   #   80 seats @ 14 kg    x 1400 J/kgK = 1.57 MJ/K
@@ -71,10 +79,14 @@ thermal_mass:
   # Not all of it does on a one-hour timescale (deep subfloor, structure
   # behind panels), so we take ~65% of the budget.
   #
-  # Sensitivity: varying this over 1.6-4.34 MJ/K moves tau_slow from 45 to
-  # 120 min but changes tau_fast by <3%, the boarding spike by <10%, and
+  # Sensitivity: varying this over 1.6-4.34 MJ/K moves tau_slow from 42 to
+  # 111 min but changes tau_fast by <3%, the boarding spike by <10%, and
   # pull-down time not at all. Everything the controller sees is governed by
   # C_air and hA, not by this value. See tests/test_physics.py.
+  # (Numbers above re-derived during the M8-era cross-milestone audit -- this
+  # comment still held pre-fresh-air-correction values, e.g. "45 to 120 min",
+  # same staleness independently found and fixed in docs/PARAMETERS.md and
+  # ROADMAP.md's M2 section.)
   interior_mass_capacity_j_k: 2.8e+6 # [ASSUMPTION] 65% of a 4.34 MJ/K mass budget
                                      # Signed exponent required: PyYAML reads 2.8e6 as a string
   # C_eff = saloon_volume * air_density * air_cp + interior_mass_capacity
@@ -246,6 +258,13 @@ comfort:
                                      # see hvac.thermostat_hysteresis_k below. The two
                                      # are conceptually different and deliberately not
                                      # tied to the same number.
+  target_rh_pct: 55.0                # [TYPICAL] ASHRAE-style indoor comfort target, already
+                                     # used as the reference point in docs/PARAMETERS.md's
+                                     # humidity-exclusion analysis before any code used it.
+                                     # Now also CabinModel.initial_state()'s anchor for the
+                                     # cabin's starting humidity ratio (M9) -- the cabin starts
+                                     # "in comfort" on humidity, the same way it already starts
+                                     # at a chosen t_air_c with no further justification needed.
 
 simulation:
   timestep_min: 1                    # [ASSUMPTION] 1-min integration, aggregated to 5 min later
