@@ -114,9 +114,24 @@ plausible range:
 
 | `C_mass` | τ_fast | τ_slow | 8-min boarding rise | Pull-down 30→24 °C |
 |---|---|---|---|---|
-| 1.6 MJ/K | 1.14 min | 45.2 min | 2.25 K | 7 min |
-| **2.8 MJ/K** | **1.16 min** | **77.7 min** | **2.12 K** | **7 min** |
-| 4.34 MJ/K | 1.17 min | 119.5 min | 2.05 K | 7 min |
+| 1.6 MJ/K | 1.09 min | 42.0 min | 2.14 K | 10 min |
+| **2.8 MJ/K** | **1.10 min** | **72.3 min** | **2.02 K** | **10 min** |
+| 4.34 MJ/K | 1.11 min | 111.3 min | 1.95 K | 10 min |
+
+(Regenerated during the M8-era cross-milestone audit, same reason and same
+method as the `h`-sensitivity table above — this one had also been missed
+by the fresh-air rate cascade. τ_fast/τ_slow and the boarding-rise column
+reproduce `test_results_are_insensitive_to_interior_mass`'s exact scenario
+for each `C_mass`; the pull-down column does not have a dedicated test to
+reproduce exactly, so it's regenerated here with the same convention
+`test_pulldown_is_faster_from_a_hotter_cabin` uses — `t_out_c=45`, command
+clamped to full cooling authority — against an empty cabin (`n_pax=0`) from
+30 °C down to 24 °C. The pre-correction table's "7 min" for all three rows
+becomes 10 min for all three post-correction: slower, because the higher
+ventilation UA is real outside-air heat gain working against cooling
+authority throughout the pull-down, but still completely flat across
+`C_mass` — the qualitative finding this table exists to demonstrate is
+unchanged.)
 
 τ_fast moves <3%, the boarding spike <10%, pull-down not at all. Only τ_slow
 (the mass soak) shifts, and nothing the controller sees depends on it —
@@ -134,14 +149,22 @@ Sensitivity, at the current `C_mass`:
 
 | `h` [W/m²K] | `hA` [W/K] | τ_fast | τ_slow | 8-min boarding rise |
 |---|---|---|---|---|
-| 2.0 | 500 | 1.94 min | 139.2 min | 3.21 K |
-| 4.0 | 1000 | 1.45 min | 93.0 min | 2.52 K |
-| **6.0** | **1500** | **1.16 min** | **77.7 min** | **2.12 K** |
-| 10.0 | 2500 | 0.82 min | 65.6 min | 1.67 K |
-| 15.0 | 3750 | 0.61 min | 59.6 min | 1.40 K |
+| 2.0 | 500 | 1.79 min | 133.9 min | 2.99 K |
+| 4.0 | 1000 | 1.37 min | 87.6 min | 2.38 K |
+| **6.0** | **1500** | **1.10 min** | **72.3 min** | **2.02 K** |
+| 10.0 | 2500 | 0.80 min | 60.2 min | 1.61 K |
+| 15.0 | 3750 | 0.59 min | 54.2 min | 1.36 K |
+
+(Regenerated during the M8-era cross-milestone audit — this table had been
+missed by the fresh-air rate cascade earlier in the project and still held
+its pre-correction numbers, e.g. τ_slow 77.7 min instead of 72.3. τ_fast/
+τ_slow via `system_time_constants()`; the boarding-rise column via the exact
+scenario `tests/test_physics.py::test_boarding_spike_is_visible_in_air_temperature`
+uses — isothermal at 30 °C, 68 passengers, 8 minutes, fan off — re-run for
+each `h`, not re-derived by hand.)
 
 The two-node conclusion holds across the whole range and *strengthens* at low
-`h`. **Stated honestly:** the boarding disturbance is 1.4–3.2 K against a ±2 K
+`h`. **Stated honestly:** the boarding disturbance is 1.4–3.0 K against a ±2 K
 comfort band, so it is *comparable to* the band across the range and exceeds it
 below roughly `h = 8`. It is not unconditionally larger than the band, and the
 presentation should not claim that it is.
@@ -171,8 +194,13 @@ This displaces an earlier cross-check: a different independent source quoted
 exactly 1200 m³/h for a 24 m, 80-passenger intercity coach at +45 °C, which
 matched 15 × 80 = 1200 exactly and no longer matches 20 × 80 = 1600. That
 source never labelled which EN 13129 condition (standard or reduced) it was
-describing — left open, not resolved either way; worth another look if time
-allows, not urgent enough to block on.
+describing at the time this was first written. **Now resolved** (re-checked,
+not just re-read): +45 °C is UIC 553-1's own extreme-condition test bound
+(see the UIC 553-1 note elsewhere in this document), and the climate chamber
+report's REDUCED rate is specifically "for extreme conditions" — so the
+1200 m³/h source was almost certainly quoting the reduced rate, not the
+standard one. The two sources agree rather than conflict; see the Supply Air
+section below for the full reasoning and a simplification this implies.
 
 Regenerating `scenarios_raw.parquet` and retraining the M4 forecaster after
 this correction moved the canonical single-scenario reference (energy
@@ -354,7 +382,7 @@ event, not simply "passengers board" — the presentation should say so.
 | `heating_cop` | 1.0 | **High — physical identity, not fitted** |
 | `dead_time_min` | 2.0 | **Low — swept in M6** |
 | `tau_act_min` | 5.0 | **Low — swept in M6** |
-| `supply_air_m3_h` | 4800.0 | Medium |
+| `supply_air_m3_h` | 6400.0 | Medium |
 | `supply_air_min_temp_c` | 10.0 | Low |
 | `supply_air_max_temp_c` | 45.0 | Low |
 | `thermostat_hysteresis_k` | 2.0 | **Medium — two independent sources agree** |
@@ -489,14 +517,42 @@ about **25.7 kW**, not 40.
 
 ### Supply air
 
-`supply_air_m3_h = 4800` — derived rather than guessed. Rail HVAC supplies
+`supply_air_m3_h = 6400` — derived rather than guessed. Rail HVAC supplies
 **20–30% outside air at design conditions**; fresh air at design load is
-15 m³/h/pax × 80 = **1200 m³/h**, which at ~25% implies ~4800 m³/h total supply.
+20 m³/h/pax × 80 = **1600 m³/h**, which at ~25% implies ~6400 m³/h total supply.
+(This section previously said 4800, from before the fresh-air rate correction
+below — see the Ventilation section for why 20, not 15, is now the design
+figure. Left un-updated here until this pass; caught by re-reading this file
+end to end rather than trusting the Ventilation section's fix to have
+propagated everywhere it needed to.)
 
-An independent source quotes **1200 m³/h for a 24 m intercity coach with 80
-passengers at +45 °C** — an exact match to our fresh-air figure, arrived at
-separately. That is the only genuine external confirmation of any ventilation
-parameter in this project.
+**The 1200 m³/h cross-check, resolved rather than left open.** An independent
+source quotes **1200 m³/h for a 24 m intercity coach with 80 passengers at
++45 °C** (re-confirmed: the same source also gives a 4.1 kW ventilation
+cooling load at that point, and states the standard's thermal chamber spans
+−25 °C to +45 °C). That last detail is the key: +45 °C is not an arbitrary
+figure, it's UIC 553-1's own upper test bound (see this document's UIC 553-1
+note elsewhere) — i.e. this source's number is quoted specifically AT the
+standard's extreme-condition test point. The climate chamber report already
+cited above states 15 m³/h/pax is the REDUCED rate "for extreme conditions."
+15 × 80 = 1200, exactly. So this project's reading is: the two sources do
+not conflict, they describe two different operating points on the same
+standard — 20 m³/h/pax normal/standard, 15 m³/h/pax reduced/extreme — and
+this "independent confirmation" was always confirming the reduced rate, not
+the standard one this project now uses for sizing.
+
+**A genuine simplification this implies, worth stating rather than hiding:**
+if real rail HVAC is allowed to throttle fresh air down under extreme heat
+specifically to protect temperature comfort, and Cairo/Aswan's real 2024
+peaks (46.4 °C / 48.1 °C) exceed even the standard's own +45 °C bound, then
+a real system on this corridor might do exactly that on its hottest days.
+This simulator does not: `fresh_air_m3_h_per_passenger` is a constant,
+temperature-independent 20 m³/h/pax throughout every run. That makes this
+model's hottest-day numbers, if anything, slightly conservative (pessimistic)
+relative to a real system with demand-controlled ventilation -- not a bug,
+and not worth implementing this close to the deadline, but worth saying
+plainly rather than letting the comparison imply the model tracks every real
+degree of freedom a production HVAC controller has.
 
 `supply_air_min_temp_c = 10.0` is the coil limit; colder risks frost and draught
 complaints. EN 13129 governs draught limits but is paywalled, so this stays
@@ -1067,4 +1123,4 @@ more than the final numbers.
 | `ThermostatController` run dual-mode | Heat below the lower threshold, cool above the upper one — what a generic thermostat does. Oscillated between full heat and full cool 18 times in 166 minutes, `T_air` swinging 21.8–30 °C, because this cabin's fast air node (`τ_fast` ≈ 1.1–1.3 min) overshoots the opposite threshold before the actuator's dead-time/lag can respond | Made cooling-only, matching every other baseline already built in this project and the documented cooling-dominated climate |
 | `evaluate.run_controller`'s journey start time used `int(depart_hour * 60)` | `data_generator.py` uses `round(...)` for the same computation — a real cross-file inconsistency (up to 1 minute), found while auditing M1–M5 compatibility before trusting the M5 headline number. Harmless in practice (weather is interpolated and slowly varying), but a genuine divergence, not just style | Changed to `round(...)`, matching `data_generator.py` |
 | `AnticipatoryController`'s first M5 headline run | Used *more* energy than `ThermostatController` on 15/23 test-split scenarios, strictly worse on both energy and comfort on 6/23. Root cause: the proportional law had no floor, so it was fully off only 0.6% of minutes vs the baseline's 32.5% — continuous low-power modulation costing more than the baseline's real off-periods | Added a deadband reusing `thermostat_hysteresis_k` (no new unsourced number), applied continuously to avoid reintroducing chattering. Validated on the val split (−4.5%→+3.4% mean saving, 6/23→0/31 dominated) before confirming once on test (+3.9% mean, 0/23 dominated) |
-| `fresh_air_m3_h_per_passenger = 15` | Was the EN 13129 Table 11 *reduced/extreme-condition* rate, not the standard one — a real climate chamber test report (surfaced by a teammate) distinguishes 20 m³/h/pax normal from 15/10 reduced, and this project had the reduced figure without realizing it was one | Corrected to 20. Cascades: `supply_air_m3_h` rescaled 4800→6400 to hold the same 25% outside-air-fraction design assumption; `ventilation_ua` and both derived time constants moved (design-load τ_slow 77.7→72.3 min; empty case unaffected, below the `min_fresh_air_m3_h` floor either way); `scenarios_raw.parquet` regenerated and the forecaster retrained (test MAE improvement over persistence essentially unchanged, +21.8%→+21.1%); M5's headline energy saving dropped 3.9%→0.9% (more marginal, reported as-is) while comfort dominance got unambiguous (11/23→23/23 scenarios equal-or-better); M6's sweep now shows *negative* energy saving at low `tau_act` (0–2 min), turning positive only from ~4–5 min on — a cleaner, more conditional, more textbook-consistent result than the pre-correction sweep. Full detail in ROADMAP.md's M5 and M6 sections. Displaces an earlier cross-check against a different source's 1200 m³/h figure, which matched the old (wrong) 15 m³/h/pax exactly — left as an open question, not silently resolved, since that source never labelled its condition either |
+| `fresh_air_m3_h_per_passenger = 15` | Was the EN 13129 Table 11 *reduced/extreme-condition* rate, not the standard one — a real climate chamber test report (surfaced by a teammate) distinguishes 20 m³/h/pax normal from 15/10 reduced, and this project had the reduced figure without realizing it was one | Corrected to 20. Cascades: `supply_air_m3_h` rescaled 4800→6400 to hold the same 25% outside-air-fraction design assumption; `ventilation_ua` and both derived time constants moved (design-load τ_slow 77.7→72.3 min; empty case unaffected, below the `min_fresh_air_m3_h` floor either way); `scenarios_raw.parquet` regenerated and the forecaster retrained (test MAE improvement over persistence essentially unchanged, +21.8%→+21.1%); M5's headline energy saving dropped 3.9%→0.9% (more marginal, reported as-is) while comfort dominance got unambiguous (11/23→23/23 scenarios equal-or-better); M6's sweep now shows *negative* energy saving at low `tau_act` (0–2 min), turning positive only from ~4–5 min on — a cleaner, more conditional, more textbook-consistent result than the pre-correction sweep. Full detail in ROADMAP.md's M5 and M6 sections. Displaces an earlier cross-check against a different source's 1200 m³/h figure, which matched the old (wrong) 15 m³/h/pax exactly — left as an open question at the time, not silently resolved, since that source never labelled its condition either (**since resolved, see the Ventilation and Supply Air sections above**) |
