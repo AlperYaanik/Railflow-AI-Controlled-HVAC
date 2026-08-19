@@ -36,16 +36,19 @@ Tests and scripts that need weather/data/model skip with an actionable message
 python -m pytest tests/ -q
 ```
 
-249 tests. Physics (free-float convergence, derived time constants, actuator
-behaviour, numerical convergence), timetable/occupancy invariants, feature
-engineering (leakage checks, batch/live equivalence), the forecaster
-(chronological split, beats persistence), the two controllers (regression
-guards for two real bugs found during development — see `docs/PARAMETERS.md`),
-the M5 comparison harness, the M6 actuator-lag sweep, the M7 Streamlit
-demo (headless `AppTest`, including that a missing model/dataset/weather
-file each produce a clean actionable error rather than a crash), and the
-M8 serial protocol (frame encode/decode, range validation, checksum
-corruption, and a real send/receive round trip over a virtual loopback).
+264 tests. Physics (free-float convergence, derived time constants, actuator
+behaviour, numerical convergence, the M9 humidity moisture balance),
+timetable/occupancy invariants, feature engineering (leakage checks,
+batch/live equivalence), the forecaster (chronological split, beats
+persistence), the two controllers (regression guards for two real bugs
+found during development — see `docs/PARAMETERS.md`), the M5 comparison
+harness, the M6 actuator-lag sweep, the M7 Streamlit demo (headless
+`AppTest`, including that a missing model/dataset/weather file each
+produce a clean actionable error rather than a crash), the M8 serial
+protocol (frame encode/decode, range validation, checksum corruption, and
+a real send/receive round trip over a virtual loopback), and the M9 model
+benchmark's data/encoding mechanics (the full multi-model comparison
+itself takes minutes and isn't run in this suite — see `ROADMAP.md`).
 
 ## Look at the model
 
@@ -57,6 +60,9 @@ python -m src.compare_controllers # the M5 headline: AnticipatoryController vs o
                                    # feedforward-contribution ablation, on the held-out test split
 python -m src.sweep_tau_act       # M6: re-runs both comparisons across a range of actuator lag
 python -m src.plot_tau_act_sweep  # produces data/m6_tau_act_sweep.png from the sweep above
+python -m src.benchmark_models    # M9: LightGBM (tuned) vs linear/random forest/XGBoost/CatBoost,
+                                   # same chronological split -- needs pip install -r requirements.txt
+                                   # (adds scikit-learn/xgboost/catboost, benchmark-only dependencies)
 ```
 
 **No time constant is written in `config/cabin_params.yaml`**; both are
@@ -114,8 +120,9 @@ to actual hardware; nothing else about the call changes.
 | `src/sweep_tau_act.py`, `src/plot_tau_act_sweep.py` | M6 — sweeps the unknown actuator lag rather than asserting a value |
 | `src/app.py` | M7 — Streamlit live demo, runs the same simulator with both controllers side by side |
 | `src/serial_bridge.py` | M8 — the UART sender to whoever owns the board; validated against pyserial's built-in loopback |
-| `tests/` | Physics, occupancy, features, training, controllers, the app, the serial bridge, and cross-layer integration tests |
-| `ROADMAP.md` | Milestones M0–M8, objective-driven |
+| `src/benchmark_models.py` | M9 — LightGBM (tuned) vs linear regression, random forest, XGBoost, CatBoost, on the same chronological split |
+| `tests/` | Physics (including the M9 humidity moisture balance), occupancy, features, training, controllers, the app, the serial bridge, the model benchmark, and cross-layer integration tests |
+| `ROADMAP.md` | Milestones M0–M9, objective-driven |
 | `docs/PARAMETERS.md` | **Why every coefficient has the value it has, plus a corrections log** |
 | `docs/serial_protocol.md` | The M8 handover document — full frame spec for the board side, no source reading required |
 | `docs/USER_MANUAL.md` | Plain-English guide to running the live demo, for a non-developer audience |
@@ -168,6 +175,16 @@ receiver/link-loss behaviour) for whoever implements the board side, from
 the document alone. `src/serial_bridge.py` is the reference sender,
 validated round-trip against pyserial's built-in in-memory loopback — no
 hardware or virtual-COM driver needed to verify it.
+
+**M9 in progress.** A simplified cabin humidity state is built and tested
+(`CabinModel.step()`'s moisture balance — no coil dehumidification, disclosed
+as an upper bound whenever the AC is cooling). `src/benchmark_models.py`
+compared the shipped LightGBM forecaster against linear regression, random
+forest, XGBoost, and CatBoost on the same chronological split — the finding
+is that model family barely matters here (all within a 1.6% MAE band); a
+tuned-hyperparameter LightGBM is the recommended adoption, not a model swap,
+since it needs no interface change. Still open: the physical prototype
+rescale, blocked on real hardware measurements.
 
 ## License
 

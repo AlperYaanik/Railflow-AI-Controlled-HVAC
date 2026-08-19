@@ -18,7 +18,11 @@ data/*.pkl
 data/*.parquet
 models/*.pt
 models/*.txt
+models/benchmark/
 checkpoints/*.pt
+
+# CatBoost's own training-log side effect (src/benchmark_models.py)
+catboost_info/
 
 # IDE
 .vscode/
