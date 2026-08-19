@@ -103,15 +103,30 @@ def to_minutes(df: pd.DataFrame, start: pd.Timestamp, minutes: int) -> pd.DataFr
 def humidity_ratio(t_c: float, rh_pct: float, pressure_kpa: float = 101.325) -> float:
     """Humidity ratio [g water / kg dry air], via the Magnus saturation formula.
 
-    Used to justify not modelling a humidity state. Latent load from ventilation
-    only exists where the outdoor humidity ratio EXCEEDS the indoor target —
-    below that, bringing in fresh air dehumidifies the cabin. In Egypt's desert
-    climate that is true most of the time, so the latent load is dominated by
-    passengers, which the coil already carries.
+    Originally added only to justify NOT modelling a humidity state (latent
+    load from ventilation only exists where the outdoor humidity ratio
+    EXCEEDS the indoor target -- below that, fresh air dehumidifies the
+    cabin, true most of the time in Egypt's desert climate). Now also the
+    building block CabinModel's simplified moisture balance uses directly
+    (see ROADMAP.md's M9) -- the same function, no duplicated formula.
     """
     p_sat = 0.61094 * math.exp(17.625 * t_c / (t_c + 243.04))
     p_vap = max(0.0, min(rh_pct, 100.0)) / 100.0 * p_sat
     return 0.622 * p_vap / (pressure_kpa - p_vap) * 1000.0
+
+
+def relative_humidity_from_ratio(t_c: float, w_g_kg: float, pressure_kpa: float = 101.325) -> float:
+    """Inverse of humidity_ratio(): RH% from a humidity ratio at a given temperature.
+
+    Exact algebraic inverse of the same Magnus-formula relationship above,
+    not a separate approximation -- the two must round-trip. Used to report
+    CabinModel's simulated cabin humidity in the unit a human (or an LCD
+    display) actually reads, since w_g_kg alone isn't intuitive.
+    """
+    p_sat = 0.61094 * math.exp(17.625 * t_c / (t_c + 243.04))
+    w = max(0.0, w_g_kg) / 1000.0
+    p_vap = w * pressure_kpa / (0.622 + w)
+    return 100.0 * p_vap / p_sat
 
 
 def daily_summary(df: pd.DataFrame) -> pd.DataFrame:

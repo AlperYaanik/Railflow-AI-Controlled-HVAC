@@ -9,6 +9,7 @@ from src.weather import (
     daily_summary,
     day_at_percentile,
     humidity_ratio,
+    relative_humidity_from_ratio,
     to_minutes,
 )
 
@@ -181,13 +182,27 @@ def test_humidity_ratio_matches_a_known_psychrometric_point():
     assert humidity_ratio(25.0, 50.0) == pytest.approx(9.9, abs=0.3)
 
 
-def test_egyptian_air_is_usually_drier_than_the_cabin_target(hourly):
-    """Justifies not modelling a humidity state — for THIS climate only.
+@pytest.mark.parametrize("t_c,rh_pct", [
+    (26.0, 55.0), (45.0, 20.0), (10.0, 90.0), (0.0, 50.0), (35.0, 0.0), (20.0, 100.0),
+])
+def test_relative_humidity_from_ratio_is_the_exact_inverse_of_humidity_ratio(t_c, rh_pct):
+    """The algebraic inverse of the same Magnus-formula relationship, not a
+    separate approximation -- must round-trip exactly (well within float
+    precision), across dry/saturated/hot/cold edges, not just one typical
+    point. CabinModel's simplified humidity state (M9) reports its output
+    through this function, so a drift here would silently mis-report every
+    humidity number the simulator produces.
+    """
+    w = humidity_ratio(t_c, rh_pct)
+    assert relative_humidity_from_ratio(t_c, w) == pytest.approx(rh_pct, abs=1e-6)
 
-    Latent load from ventilation only exists where outdoor humidity ratio
-    exceeds the indoor target. In Egypt's desert climate that is the minority of
-    hours, so the latent load is dominated by passengers, which the coil already
-    carries. This argument would not hold on a coastal route.
+
+def test_egyptian_air_is_usually_drier_than_the_cabin_target(hourly):
+    """Originally justified not modelling a humidity state at all -- M9 added
+    a simplified one (CabinModel.step()'s moisture balance), but this finding
+    still matters there: it's WHY the ventilation exchange term in that
+    balance is a net-drying effect most hours, not a humidifying one, for
+    THIS climate specifically. This argument would not hold on a coastal route.
     """
     indoor = humidity_ratio(26.0, 55.0)
     outdoor = hourly.apply(
