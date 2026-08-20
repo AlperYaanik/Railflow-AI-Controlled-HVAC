@@ -5,7 +5,12 @@
 the jury (network hiccup, projector/display issue, a stale `data/`/`models/`
 directory on the presentation machine, etc.). This script is the
 walkthrough to follow when recording it -- written so the recording takes
-one take, ~75 seconds, and hits every point a live demo would.
+one take, ~90 seconds, and hits every point a live demo would.
+
+**Updated after M9 added a third chart panel (cabin humidity).** The
+original version of this script only described two panels (temperature,
+HVAC command) -- found stale during a full-system verification pass, fixed
+before anyone tried to record against it.
 
 **Why a script and not an already-recorded file.** No tool available in this
 environment can capture the presenter's own screen: the Chrome extension
@@ -38,7 +43,7 @@ for a fallback.
 3. Maximize the browser window; close other tabs/notifications that could
    pop up during the take.
 
-## The walkthrough (~75s)
+## The walkthrough (~90s)
 
 **0:00-0:10 -- Title and framing.**
 Let the page finish loading. Read the caption aloud or paraphrase it:
@@ -72,11 +77,21 @@ speak for itself.
 Drag the **Minute** slider partway, then toggle **Auto-play from here** and
 let it run a few seconds.
 > "The chart isn't a static image -- it's the full minute-by-minute
-> trajectory. Red is on/off, green is anticipatory, the shaded band is the
-> comfort tolerance. The lower panel is the actual HVAC command each
-> controller sent."
+> trajectory. Red is on/off, green is anticipatory, the shaded band in the
+> top panel is the comfort tolerance. The middle panel is the actual HVAC
+> command each controller sent."
 
-**1:05-1:15 -- What went into it.**
+**1:05-1:25 -- The humidity panel.**
+Point at the bottom panel while it's still auto-playing or after it stops.
+> "This bottom panel tracks cabin humidity -- something most HVAC demos
+> don't show at all. It's an honest upper bound, not a fully corrected
+> number: the simulation doesn't yet model the AC actively removing
+> moisture while it cools, and that's stated on screen, not hidden in a
+> footnote."
+Do not linger on this beat -- one sentence is enough. It exists to show the
+project discloses its own known limitations, not to explain the physics.
+
+**1:25-1:35 -- What went into it.**
 Expand **What this scenario looked like going in**.
 > "And this is the exact journey behind those numbers -- city, date,
 > direction, stopping pattern, load factor -- so nothing here is
