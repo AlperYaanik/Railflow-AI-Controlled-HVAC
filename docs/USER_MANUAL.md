@@ -86,8 +86,12 @@ it and the trip plays forward automatically from wherever the slider is.
 
 **The chart**
 Top panel: cabin temperature over time for both controllers (red = on/off,
-green = anticipatory), with the comfort band shaded. Bottom panel: what
+green = anticipatory), with the comfort band shaded. Middle panel: what
 each controller was actually commanding the HVAC to do, minute by minute.
+Bottom panel: cabin humidity (%RH) for both controllers — a caption under
+the chart explains why it isn't part of the AC's energy/comfort score (the
+simulation doesn't yet model the AC removing moisture while it cools, so
+this panel is a disclosed upper bound, not a fully corrected number).
 
 **"What this scenario looked like going in" (click to expand)**
 The exact journey details behind the numbers above — which city, which
