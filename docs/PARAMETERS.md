@@ -475,12 +475,29 @@ on this specific plant was.
 
 ### Anticipatory controller blend (M5)
 
-`ff_weight = 0.6`, `gain_k = 3.0` — the feedforward (M4 forecast) / feedback
-(current error) blend ratio and control gain. **`[ASSUMPTION]`**, and honestly
-so: no literature source gives an exact blend ratio for this combination of a
-LightGBM forecaster and this specific plant. A real train HVAC MPC study
-(cited in ROADMAP's M5 section) confirms the *shape* — feedforward with
-real-time feedback correction, not pure feedforward — but not a ratio.
+`ff_weight = 0.45` (M9, down from the original `0.6`), `gain_k = 3.0` — the
+feedforward (M4 forecast) / feedback (current error) blend ratio and control
+gain. **`[ASSUMPTION]`**, and honestly so: no literature source gives an
+exact blend ratio for this combination of a LightGBM forecaster and this
+specific plant. A real train HVAC MPC study (cited in ROADMAP's M5 section)
+confirms the *shape* — feedforward with real-time feedback correction, not
+pure feedforward — but not a ratio.
+
+**`ff_weight` re-tuned in M9, after the model itself was retuned.** A
+25-point `(gain_k, ff_weight)` grid was searched on the VAL split, ranked by
+scenarios strictly better on both energy and comfort (not mean energy saving
+alone — a nearby grid point had a higher mean but nearly 10 fewer
+both-better scenarios, the classic sign of a result driven by a few
+large-swing scenarios rather than a robust one). The winning point was
+confirmed once on TEST, per this project's standing discipline: mean energy
+saving +1.2%→+3.9%, scenarios better on both energy and comfort 13/23→19/23,
+comfort-equal-or-better unchanged at 21/23, zero scenarios worse on both
+throughout — a strict improvement, not a traded-away margin. Re-run and
+re-confirmed after `src/train.py`'s LightGBM hyperparameters were separately
+retuned (`num_leaves`/`learning_rate` 31/0.05→15/0.02, `src/benchmark_models.py`)
+— the same `(gain_k=3.0, ff_weight=0.45)` point won independently against
+both the old and new model, not assumed to carry over. Full numbers in
+ROADMAP.md's M5 and M6 sections.
 
 Swept across `ff_weight ∈ {0, 0.3, 0.6, 0.9, 1.0}` in
 `tests/test_controllers.py` rather than asserted correct — the same treatment
@@ -517,11 +534,14 @@ not improved in aggregate.
 itself buys.** `src/compare_controllers.py`'s `compare_feedforward_contribution()`
 compares the shipped controller against the identical controller/deadband
 with `ff_weight` forced to 0 (pure proportional feedback, no M4 forecast).
-On the same 23 test-split scenarios, post fresh-air correction: the forecast
-costs 6.9% more energy on average but cuts total degree-hours 66.72→19.99
-K·h (23/23 scenarios equal-or-better) — a wider gap than the pre-correction
-62%, now 70%. This has been the single most consistent result across every
-re-run in this milestone (deadband fix, fresh-air correction) and it
+On the same 23 test-split scenarios, post `ff_weight` retune: the forecast
+costs 3.7% more energy on average but cuts total degree-hours 66.72→25.14
+K·h (23/23 scenarios equal-or-better) — down from the pre-retune 6.9%/70%,
+which is the expected direction: a lower `ff_weight` means the shipped
+controller leans more on feedback than before, so the forecast's own
+marginal contribution shrinks in both directions, not just one. This has
+been the single most consistent result across every re-run in this milestone
+(deadband fix, fresh-air correction, model retune, `ff_weight` retune) and it
 directly supports the design choice above ("why feedforward alone isn't
 used" applies in reverse here too: pure feedback alone isn't the free
 option either — it is measurably worse on comfort). **Not a PID comparison**
@@ -1183,3 +1203,5 @@ more than the final numbers.
 | `evaluate.run_controller`'s journey start time used `int(depart_hour * 60)` | `data_generator.py` uses `round(...)` for the same computation — a real cross-file inconsistency (up to 1 minute), found while auditing M1–M5 compatibility before trusting the M5 headline number. Harmless in practice (weather is interpolated and slowly varying), but a genuine divergence, not just style | Changed to `round(...)`, matching `data_generator.py` |
 | `AnticipatoryController`'s first M5 headline run | Used *more* energy than `ThermostatController` on 15/23 test-split scenarios, strictly worse on both energy and comfort on 6/23. Root cause: the proportional law had no floor, so it was fully off only 0.6% of minutes vs the baseline's 32.5% — continuous low-power modulation costing more than the baseline's real off-periods | Added a deadband reusing `thermostat_hysteresis_k` (no new unsourced number), applied continuously to avoid reintroducing chattering. Validated on the val split (−4.5%→+3.4% mean saving, 6/23→0/31 dominated) before confirming once on test (+3.9% mean, 0/23 dominated) |
 | `fresh_air_m3_h_per_passenger = 15` | Was the EN 13129 Table 11 *reduced/extreme-condition* rate, not the standard one — a real climate chamber test report (surfaced by a teammate) distinguishes 20 m³/h/pax normal from 15/10 reduced, and this project had the reduced figure without realizing it was one | Corrected to 20. Cascades: `supply_air_m3_h` rescaled 4800→6400 to hold the same 25% outside-air-fraction design assumption; `ventilation_ua` and both derived time constants moved (design-load τ_slow 77.7→72.3 min; empty case unaffected, below the `min_fresh_air_m3_h` floor either way); `scenarios_raw.parquet` regenerated and the forecaster retrained (test MAE improvement over persistence essentially unchanged, +21.8%→+21.1%); M5's headline energy saving dropped 3.9%→0.9% (more marginal, reported as-is) while comfort dominance got unambiguous (11/23→23/23 scenarios equal-or-better); M6's sweep now shows *negative* energy saving at low `tau_act` (0–2 min), turning positive only from ~4–5 min on — a cleaner, more conditional, more textbook-consistent result than the pre-correction sweep. Full detail in ROADMAP.md's M5 and M6 sections. Displaces an earlier cross-check against a different source's 1200 m³/h figure, which matched the old (wrong) 15 m³/h/pax exactly — left as an open question at the time, not silently resolved, since that source never labelled its condition either (**since resolved, see the Ventilation and Supply Air sections above**) |
+| Forecaster shipped with `num_leaves=31`, `learning_rate=0.05` untuned | Never benchmarked against alternatives or its own hyperparameter space — M9 built `src/benchmark_models.py` specifically to check | Val-selected 9-point grid found `num_leaves=15`, `learning_rate=0.02` beats it by a real, free 0.047 °C test MAE with zero interface change; adopted. Also benchmarked against linear regression, random forest, XGBoost, CatBoost on the same split — all six landed within a 1.6% relative MAE band, the real finding being that model family barely matters once the feature engineering is doing its job |
+| `ff_weight=0.6` never re-examined after M9's model retune | The forecaster's predictions changed (new hyperparameters above), so a blend ratio tuned against the *old* model's output characteristics had no guarantee of still being best | Re-ran the same 25-point `(gain_k, ff_weight)` val-split grid against the retrained model; `(gain_k=3.0, ff_weight=0.45)` won independently both times, confirmed once on test (mean energy saving +1.2%→+3.9%, both-better 13/23→19/23, comfort-ok unchanged 21/23, zero worse-on-both throughout — a strict improvement). Adopted; M5/M6 regenerated against both changes together, not left stale. Full numbers in ROADMAP.md's M5/M6 sections |

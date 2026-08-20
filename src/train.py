@@ -97,7 +97,14 @@ def train_model(cfg: dict | None = None, raw_path=None, verbose: bool = True):
 
     params = {
         "objective": "regression_l1", "metric": "l1",
-        "learning_rate": 0.05, "num_leaves": 31, "min_child_samples": 20,
+        # learning_rate/num_leaves tuned by src/benchmark_models.py's M9
+        # 9-point grid (val-selected, confirmed once on test): beats the
+        # original 0.05/31 by a real, free 0.047 C test MAE, no interface
+        # change. See ROADMAP.md's M9 section for the full comparison
+        # against other model families -- LightGBM (this) was competitive
+        # with, not decisively better than, several of them; this is a
+        # same-family tune, not evidence LightGBM is uniquely correct.
+        "learning_rate": 0.02, "num_leaves": 15, "min_child_samples": 20,
         "verbosity": -1, "seed": 0,
     }
     model = lgb.train(
