@@ -36,7 +36,7 @@ Tests and scripts that need weather/data/model skip with an actionable message
 python -m pytest tests/ -q
 ```
 
-268 tests. Physics (free-float convergence, derived time constants, actuator
+272 tests. Physics (free-float convergence, derived time constants, actuator
 behaviour, numerical convergence, the M9 humidity moisture balance
 including its saturation cap), timetable/occupancy invariants, feature
 engineering (leakage checks, batch/live equivalence), the forecaster
@@ -46,9 +46,11 @@ the M5 comparison harness, the M6 actuator-lag sweep, the M7 Streamlit
 demo (headless `AppTest`, including that a missing model/dataset/weather
 file each produce a clean actionable error rather than a crash), the M8 serial
 protocol (frame encode/decode, range validation, checksum corruption, and
-a real send/receive round trip over a virtual loopback), and the M9 model
+a real send/receive round trip over a virtual loopback), the M9 model
 benchmark's data/encoding mechanics (the full multi-model comparison
-itself takes minutes and isn't run in this suite — see `ROADMAP.md`).
+itself takes minutes and isn't run in this suite — see `ROADMAP.md`), and
+M9's SHAP attribution (including a regression guard for a real, documented
+LightGBM/SHAP categorical-feature incompatibility class).
 
 ## Look at the model
 
@@ -63,6 +65,8 @@ python -m src.plot_tau_act_sweep  # produces data/m6_tau_act_sweep.png from the 
 python -m src.benchmark_models    # M9: LightGBM (tuned) vs linear/random forest/XGBoost/CatBoost,
                                    # same chronological split -- needs pip install -r requirements.txt
                                    # (adds scikit-learn/xgboost/catboost, benchmark-only dependencies)
+python -m src.shap_analysis       # M9: SHAP feature attribution on the test split -- produces
+                                   # data/m9_shap_summary.png; needs shap (requirements.txt)
 ```
 
 **No time constant is written in `config/cabin_params.yaml`**; both are
@@ -121,7 +125,8 @@ to actual hardware; nothing else about the call changes.
 | `src/app.py` | M7 — Streamlit live demo, runs the same simulator with both controllers side by side |
 | `src/serial_bridge.py` | M8 — the UART sender to whoever owns the board; validated against pyserial's built-in loopback |
 | `src/benchmark_models.py` | M9 — LightGBM (tuned) vs linear regression, random forest, XGBoost, CatBoost, on the same chronological split |
-| `tests/` | Physics (including the M9 humidity moisture balance), occupancy, features, training, controllers, the app, the serial bridge, the model benchmark, and cross-layer integration tests |
+| `src/shap_analysis.py` | M9 — SHAP feature attribution on the forecaster, verified correct (not just non-crashing) against LightGBM's categorical features |
+| `tests/` | Physics (including the M9 humidity moisture balance), occupancy, features, training, controllers, the app, the serial bridge, the model benchmark, SHAP, and cross-layer integration tests |
 | `ROADMAP.md` | Milestones M0–M9, objective-driven |
 | `docs/PARAMETERS.md` | **Why every coefficient has the value it has, plus a corrections log** |
 | `docs/serial_protocol.md` | The M8 handover document — full frame spec for the board side, no source reading required |
@@ -180,13 +185,17 @@ hardware or virtual-COM driver needed to verify it.
 wired all the way through to the live demo (`CabinModel.step()`'s moisture
 balance — no coil dehumidification, disclosed as an upper bound whenever the
 AC is cooling; a saturation cap added after a real test caught %RH exceeding
-100%). `src/benchmark_models.py`
-compared the shipped LightGBM forecaster against linear regression, random
-forest, XGBoost, and CatBoost on the same chronological split — the finding
-is that model family barely matters here (all within a 1.6% MAE band); a
-tuned-hyperparameter LightGBM is the recommended adoption, not a model swap,
-since it needs no interface change. Still open: the physical prototype
-rescale, blocked on real hardware measurements.
+100%). `src/benchmark_models.py` compared the shipped LightGBM forecaster
+against linear regression, random forest, XGBoost, and CatBoost on the same
+chronological split — model family barely matters here (all within a 1.6%
+MAE band) — and the tuned LightGBM hyperparameters it found are adopted into
+the shipped model, with `AnticipatoryController`'s `ff_weight` re-tuned
+against the retrained model and M5/M6 regenerated to match (see ROADMAP.md's
+M5 section for the current headline number). `src/shap_analysis.py` adds
+SHAP feature attribution on top — verified correct against LightGBM's
+categorical features (not just non-crashing), confirming the forecaster
+leans on forecast/trend signal rather than current state alone. Still open:
+the physical prototype rescale, blocked on real hardware measurements.
 
 ## License
 
