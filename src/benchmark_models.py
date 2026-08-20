@@ -154,7 +154,9 @@ def run() -> pd.DataFrame:
         val_mae = float(np.abs(p["val"] - y[masks["val"]]).mean())
         if best_val_mae is None or val_mae < best_val_mae:
             best_val_mae, best_rf, best_pred = val_mae, m, p
-    rows.append({"model": f"random_forest{best_rf.get_params()['max_depth'], best_rf.get_params()['min_samples_leaf']}",
+    best_rf_params = {"max_depth": best_rf.get_params()["max_depth"],
+                       "min_samples_leaf": best_rf.get_params()["min_samples_leaf"]}
+    rows.append({"model": f"random_forest{best_rf_params}",
                  "train_s": time.time() - t0,
                  **{f"{n}_{k}": v for n, mask in masks.items()
                     for k, v in _score(best_pred[n], y, feat, mask).items()}})
