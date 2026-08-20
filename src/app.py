@@ -147,8 +147,8 @@ def render(up_to: int):
     t = thermo_traj.iloc[:up_to + 1]
     a = antic_traj.iloc[:up_to + 1]
 
-    fig, (ax_temp, ax_cmd) = plt.subplots(2, 1, figsize=(11, 6), sharex=True,
-                                           gridspec_kw={"height_ratios": [2, 1]})
+    fig, (ax_temp, ax_cmd, ax_rh) = plt.subplots(
+        3, 1, figsize=(11, 8), sharex=True, gridspec_kw={"height_ratios": [2, 1, 1]})
 
     ax_temp.fill_between(t["t"], t["setpoint_c"] - 1.0, t["setpoint_c"] + 1.0,
                           color="green", alpha=0.12, label="thermostat hysteresis band")
@@ -164,9 +164,26 @@ def render(up_to: int):
     ax_cmd.plot(t["t"], t["cmd_w"] / 1000.0, color="#d62728", linewidth=1.2, label="on/off")
     ax_cmd.plot(a["t"], a["cmd_w"] / 1000.0, color="#2ca02c", linewidth=1.2, label="anticipatory")
     ax_cmd.set_ylabel("HVAC command (kW)\n(+heat / −cool)")
-    ax_cmd.set_xlabel("minute")
     ax_cmd.legend(loc="upper right", fontsize=8)
     ax_cmd.grid(alpha=0.3)
+
+    # One line per controller, like the panels above -- checked, not assumed,
+    # that this is actually necessary: the underlying moisture content
+    # (w_air_g_kg) IS identical between controllers on the same scenario
+    # (the balance depends on passengers/doors/weather, never q_hvac -- no
+    # coil dehumidification term). But %RH is moisture relative to what the
+    # air COULD hold at its current temperature, and the two controllers
+    # reach different temperatures -- so their %RH readings genuinely differ
+    # even though the moisture itself doesn't. A single shared line was
+    # tried first and was wrong (confirmed by a failing test, not caught by
+    # inspection), so both are drawn here rather than picking one arbitrarily.
+    ax_rh.plot(t["t"], t["rh_air_pct"], color="#d62728", linewidth=1.2, label="on/off")
+    ax_rh.plot(a["t"], a["rh_air_pct"], color="#2ca02c", linewidth=1.2, label="anticipatory")
+    ax_rh.axhline(65.0, color="gray", linestyle=":", linewidth=1, label="ISO 19659-2 limit (65%)")
+    ax_rh.set_ylabel("cabin RH (%)")
+    ax_rh.set_xlabel("minute")
+    ax_rh.legend(loc="upper right", fontsize=8)
+    ax_rh.grid(alpha=0.3)
 
     fig.tight_layout()
     return fig
@@ -180,6 +197,15 @@ if auto_play:
         time.sleep(0.03)
 else:
     placeholder.pyplot(render(minute))
+
+st.caption(
+    "Cabin humidity (bottom panel): the underlying moisture content is identical for both "
+    "controllers on this scenario (it depends on passengers, doors, and outdoor weather, not on "
+    "which controller is running) — but %RH also depends on temperature, and the two controllers "
+    "reach different temperatures, so their %RH lines genuinely differ even though the moisture "
+    "itself doesn't. Neither line credits the AC for removing moisture while cooling, so both read "
+    "as an upper bound during active cooling, not a corrected true value. See ROADMAP.md's M9 section."
+)
 
 with st.expander("What this scenario looked like going in"):
     st.dataframe(row.drop("label").to_frame().T, hide_index=True)

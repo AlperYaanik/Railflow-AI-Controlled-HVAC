@@ -305,6 +305,28 @@ is real. Locked in as `tests/test_physics.py::test_boarding_raises_cabin_humidit
 figure) — worth stating plainly that the pre-build back-of-envelope number
 was a genuine upper bound, not a prediction that came true.
 
+**Built ≠ wired in — found and fixed the same day.** The state above passed
+its own tests but was never connected to anything: `run_controller()` never
+read the two new `StepResult` fields, and `CabinInputs.rh_out_pct` sat on
+its 50% default in every real run instead of the scenario's actual weather.
+Fixed in `src/evaluate.py` and `src/data_generator.py`; surfaced as a third
+panel in `src/app.py`. Two more things surfaced only by testing the fix,
+not by re-reading the code that already existed:
+
+- `%RH` is **not** identical between two controllers on the same scenario,
+  even though the underlying moisture (`w_air_g_kg`) is — `%RH` is relative
+  to the *current* temperature, and the controllers reach different
+  temperatures. `app.py`'s humidity panel was redesigned from one shared
+  line to one line per controller after a test caught this.
+- The moisture balance had **no ceiling** — nothing stopped `w_air_g_kg`
+  from exceeding what the air can hold as vapour at its own temperature,
+  which a test on real weather data (not a contrived edge case) turned into
+  a real `%RH > 100%` result. Fixed with a saturation cap inside `step()`'s
+  substep loop: passive condensation onto any surface below dew point (a
+  window sweating), a cheap and different mechanism from the coil
+  dehumidification this project still doesn't model. See
+  `tests/test_physics.py::test_relative_humidity_never_exceeds_100_percent`.
+
 ---
 
 ## Doors

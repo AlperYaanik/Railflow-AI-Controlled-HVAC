@@ -36,15 +36,15 @@ Tests and scripts that need weather/data/model skip with an actionable message
 python -m pytest tests/ -q
 ```
 
-264 tests. Physics (free-float convergence, derived time constants, actuator
-behaviour, numerical convergence, the M9 humidity moisture balance),
-timetable/occupancy invariants, feature engineering (leakage checks,
-batch/live equivalence), the forecaster (chronological split, beats
-persistence), the two controllers (regression guards for two real bugs
-found during development — see `docs/PARAMETERS.md`), the M5 comparison
-harness, the M6 actuator-lag sweep, the M7 Streamlit demo (headless
-`AppTest`, including that a missing model/dataset/weather file each
-produce a clean actionable error rather than a crash), the M8 serial
+268 tests. Physics (free-float convergence, derived time constants, actuator
+behaviour, numerical convergence, the M9 humidity moisture balance
+including its saturation cap), timetable/occupancy invariants, feature
+engineering (leakage checks, batch/live equivalence), the forecaster
+(chronological split, beats persistence), the two controllers (regression
+guards for two real bugs found during development — see `docs/PARAMETERS.md`),
+the M5 comparison harness, the M6 actuator-lag sweep, the M7 Streamlit
+demo (headless `AppTest`, including that a missing model/dataset/weather
+file each produce a clean actionable error rather than a crash), the M8 serial
 protocol (frame encode/decode, range validation, checksum corruption, and
 a real send/receive round trip over a virtual loopback), and the M9 model
 benchmark's data/encoding mechanics (the full multi-model comparison
@@ -176,9 +176,11 @@ the document alone. `src/serial_bridge.py` is the reference sender,
 validated round-trip against pyserial's built-in in-memory loopback — no
 hardware or virtual-COM driver needed to verify it.
 
-**M9 in progress.** A simplified cabin humidity state is built and tested
-(`CabinModel.step()`'s moisture balance — no coil dehumidification, disclosed
-as an upper bound whenever the AC is cooling). `src/benchmark_models.py`
+**M9 in progress.** A simplified cabin humidity state is built, tested, and
+wired all the way through to the live demo (`CabinModel.step()`'s moisture
+balance — no coil dehumidification, disclosed as an upper bound whenever the
+AC is cooling; a saturation cap added after a real test caught %RH exceeding
+100%). `src/benchmark_models.py`
 compared the shipped LightGBM forecaster against linear regression, random
 forest, XGBoost, and CatBoost on the same chronological split — the finding
 is that model family barely matters here (all within a 1.6% MAE band); a
