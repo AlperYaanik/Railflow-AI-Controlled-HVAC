@@ -15,6 +15,10 @@ scikit-learn
 xgboost
 catboost
 
+# M9 SHAP feature attribution (src/shap_analysis.py) -- analysis only,
+# not used by the shipped forecaster or the live demo
+shap
+
 # Plots and live demo
 matplotlib
 streamlit
