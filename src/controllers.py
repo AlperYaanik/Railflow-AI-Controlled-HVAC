@@ -154,12 +154,27 @@ class AnticipatoryController:
     asserting the default is uniquely correct -- the same treatment given to
     every other under-sourced parameter in this project (see
     docs/PARAMETERS.md's calibration priority list).
+
+    ff_weight=0.45 (M9, down from the original 0.6): a 25-point (gain_k,
+    ff_weight) grid was searched on the VAL split, ranked by n_both_better
+    (scenarios strictly better on both energy AND comfort) rather than mean
+    energy saving alone -- chasing the mean rewards a few large-swing
+    scenarios and can hide a less robust result overall (a nearby grid
+    point had a higher mean but n_both_better nearly 10 points lower). This
+    point was the grid's own maximum on that robustness metric, confirmed
+    ONCE on the TEST split per this project's tuning discipline: mean
+    energy saving +1.2%->+3.9%, both-better 13/23->19/23, worse-on-both
+    stayed 0/23, comfort-ok unchanged at 21/23 -- a strict improvement, not
+    a traded-away comfort margin. Re-confirmed after the M9 LightGBM
+    hyperparameter retune landed on the same (gain_k, ff_weight) point
+    independently -- not assumed to carry over from the old model. Full
+    numbers in ROADMAP.md's M9 section.
     """
 
     model: CabinModel
     booster: lgb.Booster
     builder: LiveFeatureBuilder
-    ff_weight: float = 0.6
+    ff_weight: float = 0.45
     gain_k: float = 3.0
 
     last_frac: float = field(default=0.0, init=False, repr=False)
