@@ -194,8 +194,16 @@ against the retrained model and M5/M6 regenerated to match (see ROADMAP.md's
 M5 section for the current headline number). `src/shap_analysis.py` adds
 SHAP feature attribution on top — verified correct against LightGBM's
 categorical features (not just non-crashing), confirming the forecaster
-leans on forecast/trend signal rather than current state alone. Still open:
-the physical prototype rescale, blocked on real hardware measurements.
+leans on forecast/trend signal rather than current state alone. A follow-up
+diagnostic pass (bias/variance, residuals, slice-based errors, a learning
+curve) found the forecaster systematically under-predicts extreme heat —
+the same documented failure mode as AI weather models underestimating
+record temperatures — and tested two literature-grounded remedies
+(monotonic constraints, an explicit saturation feature); neither held up
+under this project's own val-then-test-once discipline, so **neither was
+adopted** — a disclosed, known limitation rather than a papered-over one
+(see ROADMAP.md's M9 §4b). Still open: the physical prototype rescale,
+blocked on real hardware measurements.
 
 ## License
 

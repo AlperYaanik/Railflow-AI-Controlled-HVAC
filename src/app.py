@@ -168,15 +168,20 @@ def render(up_to: int):
     ax_cmd.grid(alpha=0.3)
 
     # One line per controller, like the panels above -- checked, not assumed,
-    # that this is actually necessary: the underlying moisture content
-    # (w_air_g_kg) IS identical between controllers on the same scenario
-    # (the balance depends on passengers/doors/weather, never q_hvac -- no
-    # coil dehumidification term). But %RH is moisture relative to what the
-    # air COULD hold at its current temperature, and the two controllers
-    # reach different temperatures -- so their %RH readings genuinely differ
-    # even though the moisture itself doesn't. A single shared line was
-    # tried first and was wrong (confirmed by a failing test, not caught by
-    # inspection), so both are drawn here rather than picking one arbitrarily.
+    # that this is actually necessary. The moisture SOURCE terms
+    # (w_air_g_kg) don't depend on q_hvac (no coil dehumidification term),
+    # but the saturation cap added to step() DOES depend on t_air_c, which
+    # does depend on q_hvac -- so on a real scenario the two controllers'
+    # absolute moisture ends up close but not always bit-identical
+    # (tests/test_evaluate.py::test_saturation_cap_can_make_two_controllers_moisture_diverge
+    # locks in "close", not "identical" -- an earlier version of that test
+    # claimed identical and was wrong). On top of that, %RH is moisture
+    # relative to what the air COULD hold at its current temperature, and
+    # the two controllers reach different temperatures regardless -- so
+    # their %RH readings differ more visibly than the underlying moisture
+    # does. A single shared line was tried first and was wrong (confirmed
+    # by a failing test, not caught by inspection), so both are drawn here
+    # rather than picking one arbitrarily.
     ax_rh.plot(t["t"], t["rh_air_pct"], color="#d62728", linewidth=1.2, label="on/off")
     ax_rh.plot(a["t"], a["rh_air_pct"], color="#2ca02c", linewidth=1.2, label="anticipatory")
     ax_rh.axhline(65.0, color="gray", linestyle=":", linewidth=1, label="ISO 19659-2 limit (65%)")
@@ -199,12 +204,14 @@ else:
     placeholder.pyplot(render(minute))
 
 st.caption(
-    "Cabin humidity (bottom panel): the underlying moisture content is identical for both "
-    "controllers on this scenario (it depends on passengers, doors, and outdoor weather, not on "
-    "which controller is running) — but %RH also depends on temperature, and the two controllers "
-    "reach different temperatures, so their %RH lines genuinely differ even though the moisture "
-    "itself doesn't. Neither line credits the AC for removing moisture while cooling, so both read "
-    "as an upper bound during active cooling, not a corrected true value. See ROADMAP.md's M9 section."
+    "Cabin humidity (bottom panel): the two controllers' underlying moisture stays close but not "
+    "always identical (it's mostly driven by passengers, doors, and outdoor weather rather than "
+    "which controller is running — but a temperature-dependent saturation cap can nudge the two "
+    "trajectories apart once cooling makes them diverge). %RH differs more visibly than the "
+    "moisture itself, since it's moisture relative to what the air can hold at its own temperature, "
+    "and the two controllers reach different temperatures. Neither line credits the AC for removing "
+    "moisture while cooling, so both read as an upper bound during active cooling, not a corrected "
+    "true value. See ROADMAP.md's M9 section."
 )
 
 with st.expander("What this scenario looked like going in"):
