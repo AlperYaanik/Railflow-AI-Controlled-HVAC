@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from src.cabin_model import CabinInputs, CabinModel
 from src.config import load_config
 from src.controllers import ThermostatController
 from src.evaluate import degree_hours_outside_band, run_controller, score
@@ -118,6 +119,95 @@ def test_run_controller_matches_the_manually_traced_reference(cfg, require_weath
     assert result.mean_err_k == pytest.approx(0.47, abs=0.05)
     assert result.worst_excursion_k == pytest.approx(5.06, abs=0.1)
     assert result.minutes == len(traj)
+
+
+def test_run_controller_reports_real_weather_driven_humidity(cfg, require_weather):
+    """M9's humidity state was built and tested inside CabinModel but never
+    reached run_controller()'s output -- found during a whole-project review
+    (not visible in the demo, the dataset, anywhere). This locks in the fix:
+    w_air_g_kg/rh_air_pct must be present and, more importantly, must vary
+    with the SCENARIO's real weather rather than sitting on CabinInputs'
+    rh_out_pct=50.0 default the whole run -- confirmed by comparing two
+    different cities' weather, not assumed from the code alone.
+    """
+    cairo = run_controller(lambda model: ThermostatController(model), cfg, city="cairo")
+    aswan = run_controller(lambda model: ThermostatController(model), cfg, city="aswan")
+
+    for traj in (cairo, aswan):
+        assert "w_air_g_kg" in traj.columns and "rh_air_pct" in traj.columns
+        assert traj["w_air_g_kg"].between(0.0, 40.0).all()
+        assert traj["rh_air_pct"].between(0.0, 100.0).all()
+        # Real weather varies minute to minute -- a constant 50% default
+        # would make every row identical.
+        assert traj["rh_air_pct"].nunique() > 1
+
+    assert not cairo["rh_air_pct"].equals(aswan["rh_air_pct"]), (
+        "Cairo and Aswan have different real outdoor humidity -- identical "
+        "output here would mean rh_out_pct isn't actually being read from "
+        "the weather file"
+    )
+
+
+def test_moisture_generation_and_exchange_have_no_direct_q_hvac_term(cfg):
+    """The precise, structural claim: the moisture balance's SOURCE terms
+    (passenger generation, ventilation/door exchange) have no q_hvac
+    dependence at all. Checked directly on two otherwise-identical runs that
+    only differ in commanded power, in a deliberately dry/hot regime (25%
+    outdoor RH, 38 C) chosen so the saturation cap below never binds --
+    isolating the claim this test is actually about from the separate,
+    known effect the next test covers.
+    """
+    model_a, model_b = CabinModel(cfg), CabinModel(cfg)
+    state_a, state_b = model_a.initial_state(30.0), model_b.initial_state(30.0)
+    w_a, w_b = [], []
+    for t in range(60):
+        cmd = -model_a.cooling_capacity_w if t % 20 < 10 else 0.0
+        w_a.append(model_a.step(state_a, CabinInputs(
+            t_out_c=38.0, rh_out_pct=25.0, n_pax=60, q_hvac_cmd_w=cmd), dt_s=60.0).w_air_g_kg)
+        w_b.append(model_b.step(state_b, CabinInputs(
+            t_out_c=38.0, rh_out_pct=25.0, n_pax=60, q_hvac_cmd_w=0.0), dt_s=60.0).w_air_g_kg)
+    assert w_a == w_b
+
+
+def test_saturation_cap_can_make_two_controllers_moisture_diverge(cfg, require_weather):
+    """A real, second-order effect found by a failing test, not designed in
+    advance: the previous test shows the moisture SOURCE terms don't depend
+    on q_hvac, but the saturation cap added to step() (see its comment --
+    w_air_g_kg can't exceed what the air holds at 100% RH for its CURRENT
+    t_air_c) does depend on temperature, which DOES depend on q_hvac. Since
+    w_air_g_kg is a persistent state, even one substep where the cap binds
+    differently for two controllers forks their moisture trajectories
+    forward from that point -- so on a real (humid enough) scenario, two
+    controllers' absolute moisture can end up close but NOT bit-identical.
+    This test locks in "close" (a small bound) rather than the stronger,
+    now-known-false "identical" claim an earlier version of this test made.
+    """
+    from src.controllers import AnticipatoryController
+    from src.features import LiveFeatureBuilder
+    from src.train import MODEL_PATH
+
+    if not MODEL_PATH.exists():
+        pytest.skip("no saved model. Run:  python -m src.train")
+    import lightgbm as lgb
+    booster = lgb.Booster(model_file=str(MODEL_PATH))
+
+    def antic_factory(model):
+        builder = LiveFeatureBuilder(cfg, city="cairo", direction="down",
+                                      pattern="semi_express", load_factor=1.0, depart_hour=8.0)
+        return AnticipatoryController(model, booster, builder)
+
+    thermo = run_controller(lambda model: ThermostatController(model), cfg)
+    antic = run_controller(antic_factory, cfg)
+
+    assert not thermo["t_air_c"].equals(antic["t_air_c"])  # sanity check: they do differ
+    max_diff = (thermo["w_air_g_kg"] - antic["w_air_g_kg"]).abs().max()
+    assert max_diff < 2.0, (
+        f"moisture trajectories diverged by {max_diff:.2f} g/kg -- more than the "
+        "saturation-cap effect alone should plausibly cause"
+    )
+    # %RH depends on t_air_c too, so it can differ even more than w_air_g_kg does.
+    assert thermo["rh_air_pct"].between(0.0, 100.0).all()
+    assert antic["rh_air_pct"].between(0.0, 100.0).all()
 
 
 def test_score_energy_matches_trajectory_sum(cfg, require_weather):

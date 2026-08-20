@@ -164,12 +164,13 @@ def generate_scenario(
     for t in range(len(profile)):
         t_out = float(w["t_out_c"].iloc[t])
         ghi = float(w["ghi_w_m2"].iloc[t])
+        rh_out = float(w["rh_out_pct"].iloc[t])
         cmd = controller.command(t, state.t_air_c, t_out)
 
         r = model.step(state, CabinInputs(
             t_out_c=t_out, ghi_w_m2=ghi,
             n_pax=profile.n_pax[t], door_open=profile.door_open[t],
-            q_hvac_cmd_w=cmd,
+            q_hvac_cmd_w=cmd, rh_out_pct=rh_out,
         ), dt_s=60.0)
 
         rows.append({
@@ -178,13 +179,20 @@ def generate_scenario(
             "pattern": service.pattern, "load_factor": service.load_factor,
             "minute": t,
             "t_air_c": r.t_air_c, "t_mass_c": r.t_mass_c,
-            "t_out_c": t_out, "ghi_w_m2": ghi,
+            "t_out_c": t_out, "ghi_w_m2": ghi, "rh_out_pct": rh_out,
             "n_pax": profile.n_pax[t], "door_open": profile.door_open[t],
             "time_to_next_station_min": profile.time_to_next_station_min[t],
             "expected_boarding": profile.expected_boarding[t],
             "setpoint_c": controller.setpoint(t_out),
             "q_hvac_cmd_w": cmd, "q_hvac_actual_w": r.q_hvac_actual_w,
             "electrical_w": r.electrical_w, "cop": r.cop,
+            "w_air_g_kg": r.w_air_g_kg, "rh_air_pct": r.rh_air_pct,
+            # Not used as a forecaster feature (FEATURE_COLUMNS is an
+            # explicit allow-list, see src/features.py) -- captured here so
+            # it exists in scenarios_raw.parquet for anyone who wants to
+            # look at it later, same reasoning M9 gave for tracking it in
+            # CabinModel in the first place: not retraining the forecaster
+            # on it, just no longer throwing it away.
         })
 
     return pd.DataFrame(rows)

@@ -28,7 +28,13 @@ way heat does at the timescales this project cares about. Deliberately does
 NOT model coil dehumidification (see step()'s comment right before it builds
 StepResult) -- that needs an Apparatus Dew Point/Bypass Factor coil model
 this project doesn't have the numbers or time budget for. Disclosed as an
-upper bound during active cooling, not silently ignored.
+upper bound during active cooling, not silently ignored. w_air_g_kg IS
+capped at saturation for the current t_air_c (a cheap passive-condensation
+floor, e.g. a window sweating, not the AC coil) -- otherwise the balance
+could report >100% RH, which a real test caught before this note was
+written, not something anticipated in advance. That cap is a different,
+much simpler mechanism than coil dehumidification and doesn't credit the
+AC for anything.
 """
 
 from collections import deque
@@ -338,7 +344,19 @@ class CabinModel:
                 + m_dot_door_kg_s * (w_out_g_kg - state.w_air_g_kg)
                 + moisture_gen_g_s
             )
-            state.w_air_g_kg = max(0.0, state.w_air_g_kg + h * d_moisture / self.air_mass_kg)
+            w_next = state.w_air_g_kg + h * d_moisture / self.air_mass_kg
+            # Capped at saturation for the CURRENT air temperature -- found
+            # by a failing test, not anticipated: without this, the balance
+            # can report >100% RH, since nothing was stopping w_air_g_kg
+            # from exceeding what the air can actually hold as vapour at its
+            # own temperature. This is passive condensation (onto any
+            # surface below dew point -- windows, walls, not necessarily the
+            # AC coil), a distinct and much cheaper mechanism from the coil
+            # dehumidification term this project still doesn't model -- it
+            # only prevents an unphysical result, it doesn't credit the AC
+            # for anything.
+            w_saturation = humidity_ratio(state.t_air_c, 100.0)
+            state.w_air_g_kg = max(0.0, min(w_next, w_saturation))
 
             q_env += d_env * h
             q_vent += d_vent * h
@@ -364,6 +382,14 @@ class CabinModel:
         # on real cabin humidity, not a corrected true value. Disclosed, not
         # hidden -- the same honesty pattern as every other stated
         # simplification in this project.
+        #
+        # rh_air_pct will never itself exceed 100% -- w_air_g_kg is capped at
+        # saturation for the current t_air_c inside the substep loop above
+        # (passive condensation, e.g. onto a window or wall below dew point,
+        # not the AC coil specifically). That is a different, cheaper
+        # mechanism from coil dehumidification: it stops the model claiming
+        # physically impossible supersaturated air, it does not credit the
+        # AC for anything.
         rh_air_pct = relative_humidity_from_ratio(state.t_air_c, state.w_air_g_kg)
 
         return StepResult(

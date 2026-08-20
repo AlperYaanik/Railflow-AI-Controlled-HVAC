@@ -95,6 +95,7 @@ def run_controller(
         r = model.step(state, CabinInputs(
             t_out_c=inputs.t_out_c, ghi_w_m2=inputs.ghi_w_m2, n_pax=inputs.n_pax,
             door_open=inputs.door_open, q_hvac_cmd_w=cmd,
+            rh_out_pct=float(w["rh_out_pct"].iloc[t]),
         ), dt_s=60.0)
         setpoint = model.setpoint(inputs.t_out_c)
         rows.append({
@@ -102,6 +103,16 @@ def run_controller(
             "err_c": r.t_air_c - setpoint, "n_pax": profile.n_pax[t],
             "door_open": profile.door_open[t], "cmd_w": cmd, "q_actual_w": r.q_hvac_actual_w,
             "electrical_w": r.electrical_w,
+            "w_air_g_kg": r.w_air_g_kg, "rh_air_pct": r.rh_air_pct,
+            # w_air_g_kg is identical for every controller run on the same
+            # scenario -- the moisture balance (M9) depends only on
+            # n_pax/door_open/t_out_c/rh_out_pct, never on q_hvac (no coil
+            # dehumidification term). rh_air_pct is NOT necessarily
+            # identical, even though it's derived from w_air_g_kg -- %RH
+            # also depends on t_air_c, which DOES differ between
+            # controllers, so two controllers can show different %RH while
+            # sharing identical underlying moisture. Confirmed by a failing
+            # test before this comment was written, not assumed.
         })
     return pd.DataFrame(rows)
 

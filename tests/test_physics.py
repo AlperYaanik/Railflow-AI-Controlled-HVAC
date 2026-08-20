@@ -696,6 +696,36 @@ def test_humidity_ratio_never_goes_negative(model):
     assert r.w_air_g_kg >= 0.0
 
 
+def test_relative_humidity_never_exceeds_100_percent(model):
+    """The opposite extreme from the test above: very humid outdoor air plus
+    a full coach's worth of passenger moisture, sustained. Found the hard
+    way (a real test on real weather data failing, not anticipated in
+    advance) that without a saturation cap, the moisture balance could push
+    w_air_g_kg past what the air can hold at its own temperature, reporting
+    a physically impossible >100% RH. The cap in step() (search "saturation"
+    there) is deliberately cheap -- capping the STATE at saturation for the
+    current t_air_c, not a real coil/condensation energy balance -- but it
+    must hold under genuinely extreme forcing, not just typical scenarios.
+    """
+    # Cooling commanded throughout -- without it, the same forcing that
+    # pushes humidity up also heats the cabin (80 passengers, no dead time/
+    # lag here since the actuator responds immediately below its capacity),
+    # which raises the saturation ceiling faster than moisture can catch up
+    # to it, and the cap never actually gets exercised. Held near t_out_c
+    # instead, so the ceiling stays put and this test can confirm the cap
+    # is actually doing something, not just never triggering.
+    state = model.initial_state(30.0)
+    hit_saturation = False
+    for _ in range(500):
+        r = model.step(state, CabinInputs(t_out_c=32.0, rh_out_pct=95.0, n_pax=80,
+                                           door_open=True, q_hvac_cmd_w=-model.cooling_capacity_w),
+                        dt_s=60.0)
+        assert r.rh_air_pct <= 100.0 + 1e-6
+        if r.rh_air_pct >= 99.9:
+            hit_saturation = True
+    assert hit_saturation, "this forcing should be enough to actually reach the cap, not just approach it"
+
+
 def test_passenger_moisture_generation_is_independent_of_hvac_mode(model):
     """Passengers exhale/perspire the same whether the HVAC is heating or
     cooling -- only the ENERGY COST of removing that moisture is gated on
