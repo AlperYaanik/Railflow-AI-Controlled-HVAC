@@ -269,6 +269,32 @@ roughly tied on this particular scenario). Deliberately rule-based rather
 than a trained model, matching the team's own explicit scope guidance for
 this milestone. Full detail in ROADMAP.md's M11 section.
 
+**M12: the receiving Control Unit becomes a black box that converges and
+holds — a proportional-integral model, replacing the bang-bang one.** A team
+discussion reframed the real HVAC unit one level further: it doesn't matter
+*how* it reaches a commanded setpoint, only that it does, and holds there —
+unlocking a strategy the old on/off model couldn't express at all
+("command 19°C to converge faster, then relax back toward 26°C"), since a
+bang-bang receiver only ever asks whether a threshold was crossed, never by
+how much. `PlantResponse` is now PI (`Kp=4000`, `Ki=4.0`, gains swept
+empirically after an initial guess oscillated, with anti-windup checked
+against the model's own real saturation bounds) — verified by trace, not
+assumed: `degree_hours` on the pinned reference scenario dropped from 42.79
+to 0.23 K·h. Re-tuning the advisor against the new plant took two honest
+attempts: the first (re-tuning `ff_weight`/`max_shift_k`/`deadband_k` alone)
+came back a genuine **regression** — comfort-ok collapsed from Phase 2's
+21/23 to 2/23 — diagnosed as a cascaded-control timescale mismatch between
+the advisor's every-minute updates and the new plant's own ~17-minute
+settling time. The second attempt fixed it directly by slowing the
+advisor's update cadence to 50 minutes, which eliminated the mismatch
+entirely (0/31 scenarios worse on both energy and comfort at every interval
+tested from 40 minutes up) and, confirmed once on TEST, landed almost
+exactly back at Phase 2's own old-plant headline (4/23 both-better, 0/23
+worse-on-both, 20/23 comfort-ok) — a disclosed parity result reached by
+diagnosing the real mechanism, not by widening the same three knobs harder.
+Full two-attempt narrative in ROADMAP.md's M12 section and
+`src/tune_advisor_m12.py`.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

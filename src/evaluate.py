@@ -72,21 +72,33 @@ def run_controller(
     isolate the advisor's actual contribution instead of conflating it with
     a difference in dispatch law.
 
-    `advisor_update_interval_min` (M10 Phase 2 investigation, default 1 =
-    every prior behaviour, unchanged): the EFFECTIVE, PlantResponse-facing
-    setpoint only updates every N minutes, held fixed in between, rather
-    than chasing a fresh recommendation every single minute. `recommend_
-    setpoint()` is still CALLED every minute regardless -- skipping the call
-    itself would also skip advancing AnticipatorySetpointAdvisor's
-    LiveFeatureBuilder history (its lag/EWMA features are defined in
-    calendar minutes, not in "advisor decisions"), corrupting the features
-    on the minutes it IS consulted. Only which of those per-minute
-    recommendations actually reaches PlantResponse is throttled. Prompted by
-    a real, well-grounded question: does recomputing every minute just add
-    chatter a bang-bang receiver can't usefully react to before the next
-    change arrives -- the same reasoning that already set M8's 30 s
-    telemetry cadence (docs/serial_protocol.md §5: the actuator's own lag,
-    not the link's update rate, is the real bottleneck).
+    `advisor_update_interval_min` (default 1 = every prior behaviour,
+    unchanged -- kept as this function's own raw default specifically so a
+    standalone run, e.g. this module's own __main__ demo below, is
+    unaffected by whatever a comparison harness tunes this to): the
+    EFFECTIVE, PlantResponse-facing setpoint only updates every N minutes,
+    held fixed in between, rather than chasing a fresh recommendation every
+    single minute. `recommend_setpoint()` is still CALLED every minute
+    regardless -- skipping the call itself would also skip advancing
+    AnticipatorySetpointAdvisor's LiveFeatureBuilder history (its lag/EWMA
+    features are defined in calendar minutes, not in "advisor decisions"),
+    corrupting the features on the minutes it IS consulted. Only which of
+    those per-minute recommendations actually reaches PlantResponse is
+    throttled.
+
+    M10 Phase 2 vs M12 FOUND OPPOSITE ANSWERS HERE, both honestly, against
+    different plants. Phase 2 (BangBangPlantResponse) confirmed 1 was
+    already optimal -- "nothing here has M8's physical-actuator/bandwidth
+    constraint," so spacing updates out only added stale chatter. M12
+    (PlantResponse's PI loop, with a real ~17 min settling time) found the
+    opposite: a 1-minute cadence fights the inner loop's own settling
+    (diagnosed as a cascaded-control timescale mismatch after M12's first
+    re-tune attempt came back a regression), and every comparison that
+    actually uses AnticipatorySetpointAdvisor against PlantResponse should
+    pass `advisor_update_interval_min=SHIPPED_ADVISOR_UPDATE_INTERVAL_MIN`
+    (src/controllers.py) explicitly rather than rely on this function's own
+    default -- see that constant's docstring for the full mechanism and
+    src/compare_controllers.py's compare() for where it's actually applied.
 
     `tint_controller` (M11, default None = no tinting, tint_level always
     0.0 -- bit-for-bit today's pre-M11 behaviour): an object matching

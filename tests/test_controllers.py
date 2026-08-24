@@ -44,6 +44,7 @@ from src.cabin_model import CabinInputs, CabinModel
 from src.config import load_config
 from src.controllers import (
     AnticipatorySetpointAdvisor,
+    BangBangPlantResponse,
     ControllerInputs,
     PlantResponse,
     ThermostatController,
@@ -336,9 +337,13 @@ def test_anticipatory_warmup_fallback_is_pure_feedback(cfg):
 # ----------------------------------------------------------------- PlantResponse
 
 
-def test_plant_response_reacts_to_a_discontinuous_setpoint_jump(cfg):
-    """Under M10, PlantResponse can be fed a DIFFERENT setpoint every call --
-    e.g. ThermostatController's slowly-varying schedule one minute and
+def test_bang_bang_plant_response_reacts_to_a_discontinuous_setpoint_jump(cfg):
+    """M12: retargeted from PlantResponse to BangBangPlantResponse -- this
+    exercises hysteresis-HOLDS-state semantics specific to the retired
+    bang-bang mechanism (M10-M11's default), not the M12 PI-based
+    PlantResponse that replaced it (see that class's own tests below).
+    BangBangPlantResponse can be fed a DIFFERENT setpoint every call -- e.g.
+    ThermostatController's slowly-varying schedule one minute and
     AnticipatorySetpointAdvisor's shifted recommendation the next, if a
     caller ever swapped advisors mid-run. Confirms it reacts to whichever
     setpoint it's given THIS call, not one remembered from a previous call --
@@ -347,7 +352,7 @@ def test_plant_response_reacts_to_a_discontinuous_setpoint_jump(cfg):
     setpoint only ever varied slowly with t_out_c.
     """
     model = CabinModel(cfg)
-    plant = PlantResponse(model)
+    plant = BangBangPlantResponse(model)
 
     # Air well above a low setpoint -- must turn cooling on.
     cmd1 = plant.respond(t_air_c=30.0, setpoint_c=22.0)
@@ -363,3 +368,45 @@ def test_plant_response_reacts_to_a_discontinuous_setpoint_jump(cfg):
     # must turn off.
     cmd3 = plant.respond(t_air_c=27.0, setpoint_c=29.0)
     assert cmd3 == 0.0
+
+
+def test_plant_response_converges_to_a_fixed_setpoint_and_holds_it(cfg):
+    """M12's actual behavioural contract: given a fixed setpoint and fixed
+    disturbance, the black box reaches it and stays close, not a permanent
+    multi-K oscillation the way BangBangPlantResponse would on this same
+    plant (see that class's own docstring for the 8+ K limit cycle it hits).
+    A loose bound, not a tight pin -- the exact residual offset is a tuning
+    detail (see ROADMAP.md's M12 section), the qualitative "converges and
+    stays close" claim is what this guards.
+    """
+    model = CabinModel(cfg)
+    plant = PlantResponse(model)
+    state = model.initial_state(35.0)
+    setpoint = 25.0
+
+    tail = []
+    for minute in range(120):
+        cmd = plant.respond(state.t_air_c, setpoint)
+        r = model.step(state, CabinInputs(t_out_c=38.0, ghi_w_m2=600.0, n_pax=50,
+                                           q_hvac_cmd_w=cmd), dt_s=60.0)
+        if minute >= 90:
+            tail.append(r.t_air_c)
+
+    assert max(tail) - min(tail) < 1.0, "should have settled, not still swinging widely"
+    assert abs(sum(tail) / len(tail) - setpoint) < 1.0, "should be holding close to setpoint, not stuck far off"
+
+
+def test_plant_response_commands_more_for_a_setpoint_further_away(cfg):
+    """The actual point of M12 (see PlantResponse's own docstring): unlike
+    BangBangPlantResponse, commanding a setpoint further from the current
+    temperature must command MORE capacity, not the same full-or-nothing
+    response regardless of distance -- this is the property the bang-bang
+    mechanism structurally lacked, which M10 Phase 2 diagnosed as why a
+    forecast-driven setpoint shift couldn't help there.
+    """
+    model = CabinModel(cfg)
+    plant = PlantResponse(model)
+
+    cmd_near = plant.respond(t_air_c=30.0, setpoint_c=28.0)   # 2 K error
+    cmd_far = plant.respond(t_air_c=30.0, setpoint_c=19.0)    # 11 K error, same call count so far
+    assert cmd_far < cmd_near < 0.0, "a colder commanded setpoint must call for more cooling, not the same amount"

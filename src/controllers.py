@@ -78,15 +78,15 @@ class ControllerInputs:
     ghi_fcst_h: float
 
 
-class PlantResponse:
-    """Simulates the RECEIVING unit's own on/off reaction to a setpoint -- a
-    stand-in for the real, third-party Control Unit this project will never
-    redesign (see the M10 reframing note at the top of this module). Used
-    IDENTICALLY for every compared arm in M5/M6: the only thing that ever
-    differs between "today's static schedule" and "the AI's recommendation"
-    is the setpoint fed to THIS class, never the mechanism -- see
-    src/evaluate.py's run_controller() for why that symmetry matters to the
-    comparison's validity.
+class BangBangPlantResponse:
+    """M10-M11's on/off reaction to a setpoint -- a stand-in for the real,
+    third-party Control Unit this project will never redesign (see the M10
+    reframing note at the top of this module). SUPERSEDED as the default by
+    PlantResponse (below) in M12, kept here, not deleted, as the honest,
+    maximally-conservative baseline model: "assume the least capable real
+    unit this project could defensibly claim compatibility with." Still
+    useful for exactly that comparison -- see PlantResponse's own docstring
+    for why M12 needed a second, more capable model in the first place.
 
     COOLING-ONLY BY DESIGN, not by omission -- and found the hard way, back
     when this logic still lived directly on ThermostatController. A first
@@ -132,6 +132,85 @@ class PlantResponse:
         return -self.model.cooling_capacity_w if self._on else 0.0
 
 
+class PlantResponse:
+    """M12: models the receiving unit as a black box that, given a
+    commanded setpoint, converges to it and HOLDS there -- not a claim
+    about its literal internal mechanism (a real PID loop, a staged or
+    variable-speed compressor -- unknown, and irrelevant to this project),
+    but a claim about its aggregate BEHAVIOR: it responds proportionally to
+    how far off it currently is, and it doesn't leave a permanent offset
+    once settled. Implemented as PI (proportional + integral), deliberately
+    not full PID: a derivative term would smooth the APPROACH (less
+    overshoot getting there) but isn't needed for "reaches target and holds
+    it," which P+I alone satisfies -- the minimal design for the stated
+    requirement, the same restraint this project applies elsewhere (e.g.
+    tint_controller.py's rule-based-not-trained choice).
+
+    WHY THIS REPLACES BangBangPlantResponse (kept, not deleted) AS THE
+    DEFAULT. M10 Phase 2 found that no (ff_weight, deadband_k) tuning ever
+    beat a static schedule, and diagnosed why: a bang-bang receiver only
+    ever asks "did the setpoint cross a threshold," never "by how much" --
+    so a forecast-driven setpoint shift can move WHEN the switch fires but
+    never HOW HARD it runs, and firing early buys no proportional benefit.
+    A proportional receiver doesn't have that ceiling: commanding a
+    setpoint further from the current temperature genuinely commands more
+    capacity (up to the real, state-dependent supply-air limit
+    CabinModel.deliverable_cooling_w/heating_w already enforces) -- which is
+    exactly the "command 19 to reach 26 faster, then relax it back" strategy
+    this milestone exists to let the advisor actually use. Whether it does
+    is a Phase-2-style re-tune, deliberately NOT assumed to transfer from
+    the bang-bang result -- see ROADMAP.md's M12 section.
+
+    ANTI-WINDUP, IMPLEMENTED, NOT ASSUMED UNNECESSARY. A naive PI integral
+    accumulates without limit while its output sits saturated at the
+    physical capacity ceiling (e.g. a large, sustained error early in a hot
+    scenario) -- then overshoots badly correcting for that windup once the
+    error shrinks. Standard fix: conditional integration, checked here
+    against this project's own real, state-dependent saturation bounds
+    (CabinModel.deliverable_cooling_w/heating_w -- the SAME bounds
+    CabinModel._actuate() itself clamps against, not a second, independently
+    guessed limit) -- the integral only accumulates further in a direction
+    that ISN'T already saturated, so recovery is never delayed once the
+    error starts pointing back the other way.
+
+    `hvac.plant_response_kp_w_per_k`/`_ki_w_per_k_per_s` are `[ASSUMPTION]`:
+    no literature source for these two numbers, chosen by simple
+    process-control reasoning then VERIFIED (not just asserted) by tracing a
+    real scenario minute by minute -- see ROADMAP.md's M12 section for the
+    trace and what it showed.
+    """
+
+    def __init__(self, model: CabinModel):
+        self.model = model
+        self.kp = model.cfg["hvac"]["plant_response_kp_w_per_k"]
+        self.ki = model.cfg["hvac"]["plant_response_ki_w_per_k_per_s"]
+        self._integral = 0.0
+        self._dt_s = 60.0
+        """Matches run_controller()'s fixed per-call cadence (one call per
+        simulated minute) -- respond() has no dt parameter of its own to
+        keep its signature identical to BangBangPlantResponse's, so this is
+        the one place that convention is assumed rather than passed in."""
+
+    def respond(self, t_air_c: float, setpoint_c: float) -> float:
+        # Sign convention matches CabinModel's (q_hvac > 0 heats, < 0 cools):
+        # error > 0 means too COLD (want heat), error < 0 means too HOT
+        # (want cooling) -- setpoint_c - t_air_c, not the other way round.
+        error = setpoint_c - t_air_c
+        q_unclamped = self.kp * error + self.ki * self._integral
+
+        cool_limit = self.model.deliverable_cooling_w(t_air_c)   # <= 0
+        heat_limit = self.model.deliverable_heating_w(t_air_c)   # >= 0
+        pushing_further_into_cooling_limit = q_unclamped <= cool_limit and error < 0.0
+        pushing_further_into_heating_limit = q_unclamped >= heat_limit and error > 0.0
+        if not (pushing_further_into_cooling_limit or pushing_further_into_heating_limit):
+            self._integral += error * self._dt_s
+
+        # Not clamped here -- CabinModel._actuate() clamps whatever it's
+        # given against these exact same deliverable_cooling_w/heating_w
+        # bounds already, so clamping twice would be redundant, not safer.
+        return self.kp * error + self.ki * self._integral
+
+
 class ThermostatController:
     """M5's baseline setpoint advisor: always recommends today's static
     EN13129 sliding-schedule setpoint (CabinModel.setpoint()) -- no forecast,
@@ -147,6 +226,43 @@ class ThermostatController:
 
     def recommend_setpoint(self, inputs: ControllerInputs) -> float:
         return self.model.setpoint(inputs.t_out_c)
+
+
+SHIPPED_ADVISOR_UPDATE_INTERVAL_MIN = 50
+"""M12 attempt 2's tuned result (src/tune_advisor_m12.py) -- how often
+run_controller() should actually APPLY a fresh AnticipatorySetpointAdvisor
+recommendation to PlantResponse, not how often recommend_setpoint() itself
+gets called (always every minute regardless -- see run_controller()'s own
+docstring on why those two are deliberately decoupled). Not a field on the
+advisor class below because it describes the EVALUATION LOOP's cadence, not
+the advisor's own decision logic -- every caller comparing this advisor
+against ThermostatController (src/compare_controllers.py's compare(),
+src/app.py) passes this explicitly via run_controller(...,
+advisor_update_interval_min=SHIPPED_ADVISOR_UPDATE_INTERVAL_MIN) so the live
+demo and the M5 harness never silently diverge from what was actually tuned.
+
+WHY 50, NOT M10 PHASE 2's DEFAULT OF 1. Phase 2 (attempt 4, sweep_update_
+interval() in src/tune_advisor.py) found spacing updates out was harmful --
+but against BangBangPlantResponse, which has no settling time of its own for
+an outer loop to respect ("nothing here has M8's physical-actuator/bandwidth
+constraint"). PlantResponse's PI loop has a real one: integral time
+Kp/Ki = 4000/4.0 = 1000 s (~17 min). Updating every simulated minute means
+the advisor keeps moving the target before the inner PI loop gets anywhere
+near the last one it was given -- a textbook cascaded-control timescale
+mismatch, diagnosed after M12's first re-tune attempt (ff_weight/max_shift_k/
+deadband_k alone) came back WORSE than the stale bang-bang-tuned values it
+was meant to replace (TEST: comfort-ok collapsed from Phase 2's 21/23 to
+2/23, worse-on-both 0/23 to 6/23 -- see src/tune_advisor_m12.py). Sweeping
+advisor_update_interval_min against the new plant confirmed the mechanism
+directly: worse-on-both hits exactly 0/31 on VAL at every interval from 40
+minutes up, i.e. once the outer loop is slower than the inner loop's own
+settling time, the two stop fighting entirely. 50 is the VAL winner in that
+region (11/31 both-better, 0/31 worse-on-both), confirmed once on TEST:
+mean +0.04%, median +0.00%, both-better 4/23, worse-on-both 0/23,
+comfort-ok 20/23, total degree-hours 15.46 -> 15.45 K*h -- matching Phase
+2's own old-plant headline (4/23 both-better, 0/23 worse-on-both, 21/23
+comfort-ok) almost exactly. See ROADMAP.md's M12 section for the full
+two-attempt narrative."""
 
 
 @dataclass
@@ -211,11 +327,16 @@ class AnticipatorySetpointAdvisor:
     booster: lgb.Booster
     builder: LiveFeatureBuilder
     ff_weight: float = 0.0
-    max_shift_k: float = 4.0
-    """[ASSUMPTION], carried forward unchanged from Phase 1 (was already
-    known not to matter much once >= ~1-2 C -- see deadband_k's docstring
-    for what Phase 2 actually found needed changing)."""
-    deadband_k: float | None = 1.5
+    max_shift_k: float = 8.0
+    """[ASSUMPTION]. Phase 1-2 (bang-bang plant) shipped 4.0 -- "was already
+    known not to matter much once >= ~1-2 C" there, since the final clamp to
+    the comfort range dominated regardless of how much authority this bound
+    granted. M12 widened it to 8.0 alongside hvac.advisor_setpoint_min_c/
+    max_c (18-30 C, well past the 22-26 C comfort range) so a shift can
+    actually reach that wider range -- confirmed in M12 attempt 1's grid
+    that 8.0 and 12.0 tied exactly (still not the lever that mattered; see
+    deadband_k's docstring for what did)."""
+    deadband_k: float | None = 1.0
     """M10 Phase 2 addition. This advisor's OWN deadband width, separate
     from PlantResponse's switching band. Both this field and `ff_weight`
     above are Phase 2's tuned result -- NOT the Phase-1 placeholders they
@@ -251,16 +372,47 @@ class AnticipatorySetpointAdvisor:
     actual need, paying full-capacity runtime with nothing proportional to
     show for it.
 
-    SHIPPED: `ff_weight=0.0` (the forecast is not used -- turning it on
+    M10 PHASE 2 SHIPPED (bang-bang plant, SUPERSEDED by M12 below, kept for
+    the record): `ff_weight=0.0` (the forecast is not used -- turning it on
     never helped, at any deadband tested), `deadband_k=1.5` (the VAL
     grid's own top-ranked point by this project's standing
     n_both_better-first discipline: 10/31 VAL scenarios both-better, only
     1/31 worse-on-both -- confirmed on TEST at 4/23 both-better, 0/23
     worse-on-both, mean energy delta -0.2%, essentially a wash rather than
     a win). This IS effectively a disclosed null result for the forecast's
-    contribution under this architecture, not a tuned improvement -- stated
+    contribution under that architecture, not a tuned improvement -- stated
     plainly rather than dressed up, matching M9's own precedent (SHAP-
-    diagnosed remedies tested, neither adopted, disclosed as a limitation)."""
+    diagnosed remedies tested, neither adopted, disclosed as a limitation).
+
+    M12 RE-TUNE, TWO ATTEMPTS -- full numbers and the diagnosis in
+    src/tune_advisor_m12.py's module docstring and ROADMAP.md's M12 section;
+    summary here. ATTEMPT 1 (this field alone, jointly with max_shift_k,
+    ff_weight, at the Phase-2 update cadence of every minute): a 27-point
+    grid, confirmed on TEST at max_shift_k=8.0/deadband_k=1.0 -- came back a
+    REGRESSION, not a win: comfort-ok collapsed from Phase 2's 21/23 to
+    2/23, worse-on-both 0/23 to 6/23, even though mean energy ticked
+    slightly positive (+0.16%). Diagnosed as a cascaded-control timescale
+    mismatch against PlantResponse's PI loop (~17 min integral time,
+    Kp/Ki=1000s) -- see SHIPPED_ADVISOR_UPDATE_INTERVAL_MIN's own docstring
+    above for the mechanism. ATTEMPT 2 fixed it by slowing
+    advisor_update_interval_min instead of widening this deadband further:
+    confirmed worse-on-both hits exactly 0/31 on VAL at every interval from
+    40 minutes up, i.e. once the outer loop stops updating faster than the
+    inner PI can settle, the two stop fighting entirely.
+
+    SHIPPED (M12): `ff_weight=0.0` (unchanged -- still sharply harmful at
+    any nonzero value, confirmed again in attempt 1, not re-litigated in
+    attempt 2), `deadband_k=1.0`, `max_shift_k=8.0`,
+    `advisor_update_interval_min=SHIPPED_ADVISOR_UPDATE_INTERVAL_MIN` (50,
+    applied by every caller that compares this advisor against
+    ThermostatController -- see that constant's own docstring). TEST:
+    mean +0.04%, median +0.00%, both-better 4/23, worse-on-both 0/23,
+    comfort-ok 20/23, total degree-hours 15.46 -> 15.45 K*h -- matching
+    Phase 2's own old-plant headline almost exactly (4/23, 0/23, 21/23).
+    Energy is flat, not a saving -- another disclosed parity result, not a
+    win dressed up as one, but a GENUINE recovery from attempt 1's
+    regression, arrived at by diagnosing the actual mechanism rather than
+    searching the same three parameters harder."""
 
     last_setpoint_shift_c: float = field(default=0.0, init=False, repr=False)
     """Exposed for tests/diagnostics/serial telemetry -- how far the most
@@ -322,12 +474,20 @@ class AnticipatorySetpointAdvisor:
         shift = float(np.clip(raw, -self.max_shift_k, self.max_shift_k))
         self.last_setpoint_shift_c = shift
 
-        # Clamp the RESULT to the same sliding-setpoint envelope
-        # CabinModel.setpoint() itself respects -- keeps every recommendation
-        # inside docs/serial_protocol.md's existing, unchanged
-        # SETPOINT_RANGE_C (22.0-26.0) with zero protocol changes. Phase 2
-        # may find this too tight and choose to widen both together, as one
-        # considered joint decision -- see ROADMAP.md's M10 section.
-        c = self.model.cfg["comfort"]
-        lo, hi = c["sliding_setpoint_low_c"], c["sliding_setpoint_high_c"]
+        # M12: clamp to hvac.advisor_setpoint_min_c/max_c -- this advisor's
+        # OWN commanding authority, deliberately wider than
+        # comfort.sliding_setpoint_low_c/high_c (the passenger-facing
+        # comfort target ThermostatController/CabinModel.setpoint() use).
+        # Under M10-M11's bang-bang PlantResponse the distinction was moot;
+        # under M12's proportional PlantResponse it is the mechanism this
+        # milestone exists to let the advisor use -- see PlantResponse's own
+        # docstring and hvac.advisor_setpoint_min_c's config comment for why.
+        # NOTE: this widens docs/serial_protocol.md's SETPOINT_RANGE_C
+        # (22.0-26.0) beyond what that document currently promises -- a real
+        # deployment's protocol would need updating to match before this
+        # authority could actually reach real hardware; flagged, not fixed
+        # here, since M10's software-only decision means nothing here talks
+        # to a real board regardless (see ROADMAP.md's M8/M10 sections).
+        hv = self.model.cfg["hvac"]
+        lo, hi = hv["advisor_setpoint_min_c"], hv["advisor_setpoint_max_c"]
         return float(np.clip(setpoint_now + shift, lo, hi))

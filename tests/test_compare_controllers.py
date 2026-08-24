@@ -6,15 +6,32 @@ docstring and src/tune_advisor.py for the full three-attempt, 80-
 configuration search this comes from): once Railflow's output became a
 setpoint recommendation fed through a bang-bang PlantResponse rather than a
 direct watts command, the pre-M10 "+3.9% energy, comfort improves too"
-headline no longer holds -- not because of a bug, but a diagnosed structural
-limit (a bang-bang receiver has no proportional response, so a forecast-
-driven setpoint shift can only move WHEN it switches, never HOW HARD it
-runs). The honestly re-tuned result is PARITY, not a win: mean energy delta
--0.2% (median +0.0%), zero scenarios worse on both energy and comfort, and
-total degree-hours slightly BETTER in aggregate (41.43 vs 42.79 K*h) even
-though energy is a wash. Confirmed once on this TEST split, matching this
-project's standing tuning discipline -- not silently reused from a
-pre-M10 run, not cherry-picked to look better than it is.
+headline no longer held -- not a bug, a diagnosed structural limit (a
+bang-bang receiver has no proportional response, so a forecast-driven
+setpoint shift can only move WHEN it switches, never HOW HARD it runs). The
+honestly re-tuned result was PARITY, not a win: mean energy delta -0.2%
+(median +0.0%), zero scenarios worse on both energy and comfort, total
+degree-hours slightly BETTER in aggregate (41.43 vs 42.79 K*h) despite
+energy being a wash.
+
+M12 RESULT (PlantResponse replaced the bang-bang plant with a proportional
+PI one -- see controllers.py's PlantResponse/AnticipatorySetpointAdvisor
+docstrings and src/tune_advisor_m12.py for the full two-attempt search):
+re-tuning (ff_weight, max_shift_k, deadband_k) alone against the new plant,
+at the OLD every-minute update cadence, came back a REGRESSION, not a win --
+comfort-ok collapsed from Phase 2's 21/23 to 2/23. Diagnosed as a cascaded-
+control timescale mismatch (the advisor moving its target faster than
+PlantResponse's own PI loop can settle -- ~17 min integral time). Fixed by
+slowing advisor_update_interval_min instead (SHIPPED_ADVISOR_UPDATE_INTERVAL_MIN
+= 50 min, src/controllers.py), which let the two loops stop fighting
+entirely (worse-on-both hits 0/31 on VAL from 40 minutes up). Re-confirmed
+once on this TEST split: mean +0.04% (median +0.00%), 0/23 worse on both
+energy and comfort, total degree-hours 15.46 -> 15.45 K*h -- matching
+Phase 2's own old-plant headline almost exactly, this time under a plant
+that actually behaves like the black-box "converges and holds" unit M12 set
+out to model. Confirmed once on this TEST split each time, matching this
+project's standing tuning discipline -- not silently reused from a prior
+run, not cherry-picked to look better than it is.
 """
 
 import lightgbm as lgb  # noqa: I001 -- must import before pandas (see src/train.py)
@@ -78,23 +95,27 @@ def test_anticipatory_is_roughly_at_parity_with_thermostat(summary):
 def test_no_scenario_is_worse_on_both_energy_and_comfort(summary):
     """The specific failure mode the ORIGINAL (pre-M10) deadband fixed: 6/23
     scenarios were strictly dominated (more energy AND more discomfort)
-    before it. Still holds under M10's re-tuned law (confirmed 0/23 on
-    TEST) -- the actual claim is "never worse on both", not merely "usually
-    better", the stronger, more specific guarantee, and the one property
-    Phase 2's re-tune was explicitly ranked to protect first (see
-    src/tune_advisor.py's n_both_better-first ranking).
+    before it. Held under M10 Phase 2's re-tuned law (0/23 on TEST) --
+    the actual claim is "never worse on both", not merely "usually better",
+    the stronger, more specific guarantee. M12's plant swap broke this
+    guarantee once (attempt 1: 6/23 worse-on-both, a real regression, not
+    assumed to transfer and not silently reused) before re-earning it with a
+    diagnosed fix (attempt 2: slowing advisor_update_interval_min to resolve
+    a cascaded-control timescale mismatch against PlantResponse's PI loop) --
+    see the module docstring and src/tune_advisor_m12.py for the full story.
     """
     assert summary["n_worse_on_both"] == 0
 
 
 def test_total_comfort_is_no_worse_in_aggregate(summary):
     """A genuine, if modest, positive finding worth locking in on its own:
-    even though per-scenario energy is roughly a wash (previous test) and
-    per-scenario comfort is only equal-or-better on 19/23, TOTAL degree-hours
-    across all 23 scenarios comes out lower for the anticipatory advisor
-    (41.43 vs ThermostatController's 42.79 K*h) -- the scenarios it helps
-    outweigh the ones it doesn't, in aggregate. Small tolerance for harmless
-    retrain noise, not an exact pin.
+    TOTAL degree-hours across all 23 TEST scenarios comes out lower for the
+    anticipatory advisor than ThermostatController's (15.45 vs 15.46 K*h,
+    M12) -- essentially tied, not a large margin, but never worse in
+    aggregate. Small tolerance for harmless retrain noise, not an exact pin.
+    M12's plant swap broke this once (attempt 1, before the
+    advisor_update_interval_min fix) and re-earned it under the new plant,
+    not merely carried it over unchecked from Phase 2's bang-bang-tuned law.
     """
     assert summary["total_candidate_degree_hours"] <= summary["total_baseline_degree_hours"] + 1.0
 

@@ -252,6 +252,49 @@ hvac:
   # AIRAH standard target, not the low or high end of either source.
   thermostat_hysteresis_k: 2.0       # [TYPICAL] AIRAH standard target; matches the
                                      # 1.5 K figure found in a real vehicle A/C patent
+                                     # Still used by BangBangPlantResponse (kept, not
+                                     # the M12 default -- see src/controllers.py).
+
+  # M12: PI gains for PlantResponse's black-box model of the receiving unit --
+  # "reaches the commanded setpoint and holds it there," not a claim about the
+  # real unit's literal internal algorithm (PID, staged compressor, whatever --
+  # unknown and irrelevant, only the aggregate BEHAVIOR is being modelled).
+  # [ASSUMPTION]: no literature/datasheet source for these two numbers, same
+  # honesty standard as every other under-sourced parameter here. Chosen by
+  # simple process-control reasoning, then VERIFIED (not just asserted) by
+  # tracing a real scenario minute by minute -- see ROADMAP.md's M12 section
+  # for the trace and what it showed.
+  plant_response_kp_w_per_k: 4000.0  # [ASSUMPTION] Full cooling_capacity_w (40 kW) at a 10 K
+                                     # error. NOT a first guess -- an initial 10000 (full
+                                     # capacity at 4 K) oscillated badly (+/-2 K, never
+                                     # settling) once combined with the actuator's own
+                                     # dead_time_min/tau_act_min delay; swept down until the
+                                     # closed loop actually settled instead of ringing. See
+                                     # ROADMAP.md's M12 section for the sweep and the trace
+                                     # that caught the oscillation.
+  plant_response_ki_w_per_k_per_s: 4.0 # [ASSUMPTION] Integral time Kp/Ki = 1000 s (~17 min,
+                                     # ~3x tau_act_min) -- same sweep as Kp, picked for a
+                                     # small (<0.3 K), still-shrinking residual offset within
+                                     # one journey rather than a mathematically exact zero
+                                     # that would take unrealistically long to reach.
+
+  # M12: AnticipatorySetpointAdvisor's OWN commanding authority -- deliberately
+  # WIDER than comfort.sliding_setpoint_low_c/high_c below. Under M10-M11's
+  # bang-bang PlantResponse this distinction was moot (the plant only cared
+  # whether a threshold was crossed, never by how much past it). Under M12's
+  # proportional PlantResponse it is the whole point: commanding, say, 19 C
+  # when the real target is 26 C is a deliberate "overshoot the command to
+  # get more capacity now, then relax it back" strategy -- the advisor is not
+  # claiming 19 C is comfortable, it is asking for a stronger PI response,
+  # trusting its own next-minute recommendation (and the plant's own
+  # dead-time/lag) to correct course before the cabin gets anywhere near it.
+  # [ASSUMPTION]: not a real product's authority limit, chosen to be
+  # meaningfully wider than the 4 C-wide comfort band without asking for
+  # something implausible as a cabin target (unlike supply_air_min/max_temp_c
+  # above, which describe the COIL's own limit, not a sensible cabin-target
+  # range -- deliberately not reused here for that reason).
+  advisor_setpoint_min_c: 18.0
+  advisor_setpoint_max_c: 30.0
 
 comfort:
   # EN 13129 defines interior temperature as a sliding function of outdoor
