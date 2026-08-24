@@ -63,7 +63,7 @@ from typing import Callable
 import pandas as pd
 
 from src.config import DATA_DIR, load_config
-from src.controllers import AnticipatorySetpointAdvisor, ThermostatController
+from src.controllers import SHIPPED_ADVISOR_UPDATE_INTERVAL_MIN, AnticipatorySetpointAdvisor, ThermostatController
 from src.evaluate import run_controller, score
 from src.features import LiveFeatureBuilder
 from src.train import MODEL_PATH, chronological_split
@@ -200,17 +200,22 @@ def _compare_pair(
 
 def compare(
     cfg: dict | None = None, scenarios: pd.DataFrame | None = None,
-    advisor_update_interval_min: int = 1, **advisor_kwargs,
+    advisor_update_interval_min: int = SHIPPED_ADVISOR_UPDATE_INTERVAL_MIN, **advisor_kwargs,
 ) -> pd.DataFrame:
     """AnticipatorySetpointAdvisor vs ThermostatController -- "does smart
     control beat what real rail HVAC does today?" See the module docstring.
 
     `**advisor_kwargs` forwards to AnticipatorySetpointAdvisor -- e.g.
-    `ff_weight=...`, `max_shift_k=...` for M10 Phase 2's VAL-split tuning
-    (`src/tune_advisor.py`). Empty by default, so every existing caller
-    keeps getting the class's own shipped defaults, unchanged.
-    `advisor_update_interval_min` forwards to run_controller() -- see its
-    own docstring; default 1 leaves every existing caller unchanged.
+    `ff_weight=...`, `max_shift_k=...` for M10/M12's VAL-split tuning
+    (`src/tune_advisor.py`, `src/tune_advisor_m12.py`). Empty by default, so
+    every existing caller keeps getting the class's own shipped defaults,
+    unchanged. `advisor_update_interval_min` forwards to run_controller() --
+    see its own docstring; defaults to SHIPPED_ADVISOR_UPDATE_INTERVAL_MIN
+    (M12's tuned cadence, applied to BOTH arms -- see that constant's
+    docstring in src/controllers.py for why 1-minute updates fight
+    PlantResponse's own PI settling time), not run_controller()'s own raw
+    default of 1 -- that raw default stays 1 specifically so a standalone
+    ThermostatController-only run (no comparison happening) is unaffected.
     """
     cfg = cfg if cfg is not None else load_config()
     booster = _load_booster()
@@ -226,6 +231,7 @@ def compare(
 
 def compare_feedforward_contribution(
     cfg: dict | None = None, scenarios: pd.DataFrame | None = None,
+    advisor_update_interval_min: int = SHIPPED_ADVISOR_UPDATE_INTERVAL_MIN,
 ) -> pd.DataFrame:
     """The shipped AnticipatorySetpointAdvisor (ff_weight=0.0 -- itself
     Phase 2's own VAL-grid/TEST-once tuned result, not an arbitrary choice;
@@ -241,6 +247,12 @@ def compare_feedforward_contribution(
     asserts, that deliberately turning the forecast back on makes things
     worse under this architecture -- see ROADMAP.md's M10 section.
 
+    `advisor_update_interval_min` defaults to SHIPPED_ADVISOR_UPDATE_INTERVAL_MIN
+    (M12), applied to BOTH arms -- see tests/test_compare_controllers.py's
+    test_forcing_the_forecast_on_does_not_help for whether the ff_weight=0.3
+    finding still holds at this slower cadence (originally found only at the
+    fast, every-minute cadence -- not assumed to carry over unchecked).
+
     NOT A PID CONTROLLER. Neither arm has an integral or derivative term.
     Calling this "PID" on a slide would be the same kind of unearned claim
     this project already renamed once (see controllers.py: "Smith
@@ -255,6 +267,7 @@ def compare_feedforward_contribution(
         baseline_factory=lambda row: _anticipatory_factory(cfg, booster, row),
         candidate_factory=lambda row: _anticipatory_factory(cfg, booster, row, ff_weight=0.3),
         baseline="shipped", candidate="with_forecast",
+        advisor_update_interval_min=advisor_update_interval_min,
     )
 
 

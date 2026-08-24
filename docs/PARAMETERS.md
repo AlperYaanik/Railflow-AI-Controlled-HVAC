@@ -444,6 +444,9 @@ event, not simply "passengers board" — the presentation should say so.
 | `supply_air_min_temp_c` | 10.0 | Low |
 | `supply_air_max_temp_c` | 45.0 | Low |
 | `thermostat_hysteresis_k` | 2.0 | **Medium — two independent sources agree** |
+| `plant_response_kp_w_per_k` | 4000.0 | **Low — swept in M12** |
+| `plant_response_ki_w_per_k_per_s` | 4.0 | **Low — swept in M12** |
+| `advisor_setpoint_min_c` / `advisor_setpoint_max_c` | 18.0 / 30.0 | Low |
 
 ### Thermostat hysteresis (M5)
 
@@ -479,6 +482,59 @@ extracted so every compared advisor reacts through the identical mechanism
 rather than each baseline reimplementing its own. Sourcing and the dual-mode
 finding above are unaffected; `thermostat_hysteresis_k` means exactly what it
 meant before.
+
+**M12 note — superseded as the default, kept for comparison.** The class
+above is renamed `BangBangPlantResponse`; `thermostat_hysteresis_k` still
+means exactly what it meant before, and this remains an honest, sourced
+baseline model — "the least capable real unit this project could defensibly
+claim compatibility with." It is no longer what `PlantResponse` (the name)
+refers to — see the next subsection.
+
+### PlantResponse: PI gains and the widened advisor authority (M12)
+
+A team discussion reframed the receiving Control Unit as a **black box**
+that converges to a commanded setpoint and holds there — not a claim about
+its internal mechanism, but about its aggregate behaviour. `PlantResponse`
+was rebuilt as proportional-integral (`q = Kp·error + Ki·∫error dt`) to
+model that: `BangBangPlantResponse` can only ask "did the setpoint cross a
+threshold," never "by how much," so a bolder commanded setpoint buys nothing
+beyond whatever the hysteresis band already triggers.
+
+`plant_response_kp_w_per_k = 4000.0`, `plant_response_ki_w_per_k_per_s = 4.0`
+— **`[ASSUMPTION]`**, no literature/datasheet source, same honesty standard
+as every other under-sourced parameter here. Chosen by simple process-control
+reasoning, then *verified*, not just asserted: an initial `Kp=10000` (full
+40 kW capacity at a 4 K error) oscillated badly once combined with the
+actuator's own `dead_time_min`/`tau_act_min` delay — traced minute by
+minute, ±2 K swings that never settled — and was swept down until the
+closed loop actually settled. `Ki=4.0` gives an integral time `Kp/Ki=1000 s`
+(~17 min), picked for a small, still-shrinking residual offset within one
+journey rather than a mathematically exact zero that would take
+unrealistically long to reach. **Anti-windup is implemented, not assumed
+unnecessary**: conditional integration, checked against the same real,
+state-dependent saturation bounds `CabinModel._actuate()` itself clamps
+against (`deliverable_cooling_w`/`deliverable_heating_w`), not a second,
+independently guessed limit.
+
+On the pinned reference scenario, replacing `BangBangPlantResponse` with
+this PI model dropped `degree_hours` from 42.79 to 0.23 K·h; energy and
+`worst_excursion_k` (5.06 K) were essentially unchanged, confirming that
+ceiling is physical (the supply-air path), not a control-law artifact.
+
+`advisor_setpoint_min_c = 18.0`, `advisor_setpoint_max_c = 30.0` —
+**`[ASSUMPTION]`**, `AnticipatorySetpointAdvisor`'s own commanding authority,
+deliberately wider than `comfort.sliding_setpoint_low_c/high_c` (22–26 °C,
+the passenger-facing comfort target `ThermostatController`/
+`CabinModel.setpoint()` use). Under the bang-bang plant this distinction was
+moot; under the proportional one it is the mechanism a strategy like
+"command 19 °C to converge faster, then relax back toward 26 °C" needs to be
+expressible at all. `CabinModel.supply_air_min_temp_c`/`supply_air_max_temp_c`
+(10–45 °C, the coil's own physical limit) were deliberately **not** reused
+here — a different physical quantity, and far too extreme as a cabin
+*target*. This widens `docs/serial_protocol.md`'s documented
+`SETPOINT_RANGE_C` (22.0–26.0) beyond what that document currently
+promises — flagged, not fixed, since the M10 software-only decision means
+nothing here talks to real hardware regardless.
 
 ### Anticipatory controller blend (M5)
 
@@ -588,6 +644,30 @@ TEST scenarios), `deadband_k=1.5` (the search's own top-ranked point, TEST
 mean energy delta −0.2%, 0/23 worse-on-both, aggregate degree-hours slightly
 lower). Full numbers and the mechanism in ROADMAP.md's M5 section (bottom)
 and `src/tune_advisor.py`'s module docstring.
+
+**M12 re-tune — two attempts, the first a regression, the second a
+diagnosed fix.** Once `PlantResponse` became proportional (previous
+subsection), Phase 2's `(ff_weight, deadband_k)` values were stale by
+construction — tuned for a plant with no proportional response at all.
+*Attempt 1* re-tuned `(ff_weight, max_shift_k, deadband_k)` together at the
+unchanged every-minute update cadence: 27 VAL configurations, confirmed once
+on TEST at the winner (`max_shift_k=8.0, deadband_k=1.0`) — **worse than
+just leaving the stale values in place.** Comfort-ok collapsed from Phase
+2's 21/23 to 2/23, worse-on-both rose from 0/23 to 6/23. Diagnosed as a
+cascaded-control timescale mismatch: `PlantResponse`'s PI integral time is
+~17 min, but the advisor recomputed its target every simulated minute from
+the current error — moving the target before the inner loop settled
+anywhere near the last one. *Attempt 2* tested the fix directly:
+`advisor_update_interval_min` (a `run_controller()` parameter, not an
+advisor field — see `src/controllers.py`'s `SHIPPED_ADVISOR_UPDATE_INTERVAL_MIN`)
+swept from 1 to 60 minutes, `ff_weight=0.0`/`max_shift_k=8.0` held fixed.
+Worse-on-both hit exactly 0/31 on VAL at every interval ≥ 40 minutes.
+Shipped `advisor_update_interval_min=50, deadband_k=1.0`: TEST mean energy
+delta **+0.04%** (median +0.00%), both-better 4/23, worse-on-both **0/23**,
+comfort-ok 20/23, total degree-hours 15.46→15.45 K·h — matching Phase 2's
+own old-plant headline (4/23, 0/23, 21/23) almost exactly. Full grid results
+and the two-attempt narrative in `src/tune_advisor_m12.py`'s module
+docstring and ROADMAP.md's M12 section.
 
 ### Cooling capacity — raised from 30 kW during the M1 audit
 
