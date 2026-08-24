@@ -47,7 +47,18 @@ envelope:
   u_value_w_m2k: 2.2                # [ASSUMPTION] Modern insulated rail car body, 2.0-2.5 range
   # UA = envelope_area_m2 * u_value_w_m2k -> computed in code, not hardcoded.
 
-  solar_heat_gain_coefficient: 0.45 # [ASSUMPTION] Tinted/laminated rail glazing
+  solar_heat_gain_coefficient: 0.45 # [ASSUMPTION] Tinted/laminated rail glazing.
+  # M11: this is now the CEILING (tint_level=0.0, clear/untinted state of the
+  # electrochromic glass) -- unchanged in meaning or value from pre-M11, so
+  # tint_level=0.0 reproduces every earlier milestone's result exactly.
+
+  solar_heat_gain_coefficient_tinted: 0.15 # [ASSUMPTION] Fully darkened (tint_level=1.0)
+  # M11: SPD/electrochromic smart glass. No vehicle-specific product
+  # datasheet sourced this figure -- general smart-glass technology supports
+  # a substantial transmission swing when fully darkened, but the exact
+  # number here is a placeholder, same honesty standard as every other
+  # unsourced parameter in this file (see docs/PARAMETERS.md). Swept, not
+  # asserted, wherever this matters to a headline claim.
 
   # glazing_area_m2 counts windows on BOTH sides of the coach, but only one
   # side faces the sun at any moment. Without this factor the solar gain is
@@ -292,6 +303,21 @@ route:
     - "Cairo Ramses"
     - "Sidi Gaber"
     - "Alexandria Misr"
+
+  # M11: illustrative sun-blocking zones for the window-tint controller demo.
+  # [ASSUMPTION / DEMO DEVICE] -- NOT a claim that the real Cairo-Alexandria
+  # line has tunnels; the Nile Delta this route crosses is flat, low-lying
+  # terrain, and no tunnel was sourced for it. Stands in for whatever a real
+  # deployment's route would actually have (a tunnel, a station canopy, a
+  # shaded/elevated section, a built-up urban stretch) -- anywhere GHI
+  # reaching the cabin drops sharply and predictably by route position, which
+  # is the thing the anticipatory tint controller is meant to react to before
+  # it happens, not while it's already underway. Two zones by minute-into-
+  # journey, chosen to land clear of station dwells so the effect is
+  # separable from boarding/alighting disturbances.
+  tunnel_zones_min:
+    - {start_min: 60,  end_min: 65}
+    - {start_min: 135, end_min: 142}
 
 locations:
   # Real historical weather, fetched by src/weather.py from the Open-Meteo

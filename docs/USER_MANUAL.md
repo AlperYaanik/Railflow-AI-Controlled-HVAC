@@ -138,7 +138,7 @@ plain numbers/text instead of an interactive page:
 ```bash
 python -m src.compare_controllers   # prints the headline energy/comfort comparison
 python -m src.sweep_tau_act         # re-runs it across a range of assumed HVAC response delays
-python -m pytest tests/ -q          # runs the full automated test suite (273 checks)
+python -m pytest tests/ -q          # runs the full automated test suite (283 checks)
 ```
 
 ## 7. Where to look for more
