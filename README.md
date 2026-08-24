@@ -295,6 +295,22 @@ diagnosing the real mechanism, not by widening the same three knobs harder.
 Full two-attempt narrative in ROADMAP.md's M12 section and
 `src/tune_advisor_m12.py`.
 
+**M13: station precool, closing a real gap between the architecture and the
+team's own demo scenario.** Checking M12's shipped tuning against a concrete
+"pull the HMI setpoint to 19°C ahead of a stop" example found that
+`ff_weight=0.0` (both M10 Phase 2's and M12's own tuned result) means the
+advisor is pure feedback — it never anticipates a scheduled future event,
+including a station stop it already has exact timing for
+(`time_to_next_station_min`). New `StationPrecoolAdvisor`: an independent,
+additive, schedule-driven shift (not a variant of `ff_weight`, so it doesn't
+touch M12's already TEST-confirmed result), applied to the AI arm only —
+never the static baseline, preserving the exact contrast being demonstrated.
+Verified on a real trace, honestly: peak cabin temperature around a boarding
+stop drops 25.19°C→24.45°C (−0.73°C), at a real energy cost (+6.2% on the
+scenarios checked) — a genuine, demonstrable anticipation effect, disclosed
+as modest rather than oversold as the full "22 stays at 22" framing. Full
+detail in ROADMAP.md's M13 section.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

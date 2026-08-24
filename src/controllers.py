@@ -491,3 +491,77 @@ class AnticipatorySetpointAdvisor:
         hv = self.model.cfg["hvac"]
         lo, hi = hv["advisor_setpoint_min_c"], hv["advisor_setpoint_max_c"]
         return float(np.clip(setpoint_now + shift, lo, hi))
+
+
+@dataclass
+class StationPrecoolAdvisor:
+    """M13: pre-cools the cabin ahead of a KNOWN, schedule-certain station
+    stop -- boarding brings a real heat/humidity disturbance (open doors,
+    fresh-air load, passenger heat -- see CabinModel.step()), and this
+    mechanism asks the plant for more cooling BEFORE it arrives, banking
+    thermal headroom so the disturbance is absorbed rather than felt. The
+    concrete claim: a passenger sitting through a station stop under this
+    mechanism should see LESS temperature excursion than the same stop
+    under AnticipatorySetpointAdvisor alone -- verified directly on a real
+    scenario, not just asserted (see tests/test_controllers.py).
+
+    DELIBERATELY SEPARATE FROM AnticipatorySetpointAdvisor's ff_weight
+    BLEND, not a variant of it. That blend answers "does a generic
+    ML-forecast term improve AGGREGATE energy/comfort across random
+    scenarios" -- both M10 Phase 2 and M12 found the answer is no (ff_weight
+    stays shipped at 0.0). This answers a narrower, different question: "can
+    the system visibly, demonstrably anticipate one SPECIFIC, schedule-known
+    event" -- yes, and unlike a general forecast, arrival timing here is
+    exact (occupancy.py's time_to_next_station_min), not a prediction with
+    its own error to blend against. Reusing ff_weight for this would
+    reintroduce exactly the aggregate-metric tension that made ff_weight=0.0
+    correct for the OTHER question; keeping this as an independent, additive
+    term means it can be added or removed without touching M12's already
+    TEST-confirmed (ff_weight, deadband_k, max_shift_k,
+    advisor_update_interval_min) result at all.
+
+    NOT THROTTLED BY advisor_update_interval_min, unlike
+    AnticipatorySetpointAdvisor's own shift -- and deliberately so.
+    SHIPPED_ADVISOR_UPDATE_INTERVAL_MIN=50 exists because a FEEDBACK-driven
+    shift (reacting to CURRENT measured error, every minute) fights
+    PlantResponse's own ~17 min PI settling time (see that constant's
+    docstring). This term carries none of that risk: it is a fixed function
+    of time_to_next_station_min, a SCHEDULE quantity with no measured error
+    in the loop at all -- there is nothing for it to "chase" or overcorrect,
+    so src/evaluate.py's run_controller() applies it fresh every minute,
+    independent of whatever cadence the general advisor is throttled to.
+
+    SELF-RELAXING WITHOUT SPECIAL-CASE LOGIC. occupancy.py's
+    time_to_next_station_min counts down toward the NEXT station only
+    (`st.arrive_min > t`, strictly) -- at the exact arrival minute it has
+    already jumped to counting toward the station AFTER that one, typically
+    a much larger number. precool_shift_c() therefore returns to 0.0
+    automatically the instant a station is reached, with no separate
+    "recovery" branch needed: traced directly against occupancy.py's own
+    array, not assumed from reading the formula.
+
+    `lead_min` [ASSUMPTION, but reused, not new]: defaults to
+    `simulation.control_horizon_min` (30 min) -- the SAME lookahead
+    AnticipatorySetpointAdvisor's own forecast and AnticipatoryTintAdvisor
+    (M11) already use, rather than inventing a fourth lookahead constant.
+    Comfortably exceeds the actuator's own dead_time_min+tau_act_min (~7 min)
+    and PlantResponse's PI settling time (~17 min combined), so the plant has
+    the full window to actually reach the lower setpoint before boarding
+    starts, not just begin moving toward it.
+
+    `shift_k` (`hvac.station_precool_shift_k`, -3.0) [ASSUMPTION]: applied
+    as a CONSTANT across the whole lead window, not a ramp -- a ramp would
+    only reach full strength at the moment of arrival, exactly when the
+    lead time to actually cool down has run out; a step gives the plant the
+    entire window at full authority instead. Anchored directly to the
+    team's own illustrative example (22 C pulled to 19 C ahead of a stop),
+    not derived or swept.
+    """
+
+    lead_min: float
+    shift_k: float
+
+    def precool_shift_c(self, inputs: ControllerInputs) -> float:
+        if 0.0 < inputs.time_to_next_station_min <= self.lead_min:
+            return self.shift_k
+        return 0.0

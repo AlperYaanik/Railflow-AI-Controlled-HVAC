@@ -447,6 +447,7 @@ event, not simply "passengers board" — the presentation should say so.
 | `plant_response_kp_w_per_k` | 4000.0 | **Low — swept in M12** |
 | `plant_response_ki_w_per_k_per_s` | 4.0 | **Low — swept in M12** |
 | `advisor_setpoint_min_c` / `advisor_setpoint_max_c` | 18.0 / 30.0 | Low |
+| `station_precool_shift_k` | -3.0 | **Low — anchored to team's own example, not swept (M13)** |
 
 ### Thermostat hysteresis (M5)
 
@@ -535,6 +536,50 @@ here — a different physical quantity, and far too extreme as a cabin
 `SETPOINT_RANGE_C` (22.0–26.0) beyond what that document currently
 promises — flagged, not fixed, since the M10 software-only decision means
 nothing here talks to real hardware regardless.
+
+### StationPrecoolAdvisor — anticipating a schedule, not a forecast (M13)
+
+Checking M12's shipped advisor against a concrete "pull the HMI setpoint to
+19 °C ahead of a stop" scenario found a real gap: shipped `ff_weight=0.0`
+means the advisor is pure feedback, reacting only to CURRENT error — it
+never anticipates a scheduled future event, even though
+`time_to_next_station_min` already reaches it as a feature. That gap is
+answered by a deliberately SEPARATE mechanism, not by reopening `ff_weight`
+(both M10 Phase 2 and M12 found a generic ML-forecast blend hurts aggregate
+energy/comfort — a different question from "can the system anticipate one
+specific, schedule-certain event").
+
+`station_precool_shift_k = -3.0` — **`[ASSUMPTION]`**, anchored directly to
+the team's own illustrative example (22 °C pulled to 19 °C ahead of a stop),
+not derived or swept — a single, simple, explained rule, matching this
+project's established "rule-based, not trained" treatment of every other
+event-triggered mechanism (`tint_controller.py`). `lead_min` reuses
+`simulation.control_horizon_min` (30 min) rather than inventing a fourth
+lookahead constant — already established for M4's forecast and M11's tint
+advisor, and comfortably exceeds the actuator's dead-time/lag (~7 min) plus
+`PlantResponse`'s PI settling time (~17 min), so the plant has the full
+window to actually reach the lower setpoint, not just start moving toward
+it. Applied as a CONSTANT across the whole lead window, not a ramp — a ramp
+would only reach full strength at the moment of arrival, exactly when the
+time to actually cool down has run out.
+
+**Deliberately not throttled by `advisor_update_interval_min`** (M12) —
+that throttle exists because a feedback-driven shift fights `PlantResponse`'s
+own settling time; this term is a fixed function of a schedule quantity with
+no measured error in the loop, so none of that cascaded-control risk
+applies, and `run_controller()` applies it fresh every minute regardless of
+the general advisor's cadence.
+
+**Verified on a real trace, honestly modest, not oversold.** Benha (the
+timetable's second stop, 14 boarding passengers): peak cabin temperature in
+the 10 minutes around arrival drops 25.19 °C → 24.45 °C (−0.73 °C) with
+precool active — real, right direction, well short of a literal "stays at
+22 instead of 25." Costs real energy: +6.2% on the scenarios checked. A test
+that first compared against the fixed EN13129 setpoint (`err_c`) came back a
+coincidental false negative (1.199 vs 1.198 °C) despite the precooled
+trajectory being visibly cooler throughout when traced minute by minute —
+fixed to compare peak absolute `t_air_c`, which has no such confound. Full
+trace and numbers in ROADMAP.md's M13 section.
 
 ### Anticipatory controller blend (M5)
 

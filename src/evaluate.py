@@ -55,6 +55,7 @@ def run_controller(
     load_factor: float = 1.0,
     advisor_update_interval_min: int = 1,
     tint_controller: object | None = None,
+    station_precool_advisor: object | None = None,
 ) -> pd.DataFrame:
     """Drives one setpoint advisor through one real journey, minute by minute.
 
@@ -109,6 +110,19 @@ def run_controller(
     state to construct fresh (no LiveFeatureBuilder-equivalent), so there's
     nothing a factory would buy here. Consulted every minute using the SAME
     ControllerInputs already built for the HVAC advisor.
+
+    `station_precool_advisor` (M13, default None = no precool, byte-identical
+    to pre-M13 behaviour): a StationPrecoolAdvisor (src/controllers.py),
+    same ready-instance shape as `tint_controller`. UNLIKE the general
+    advisor's own recommendation, its shift is added to `effective_setpoint_c`
+    EVERY MINUTE, bypassing `advisor_update_interval_min` entirely -- see
+    StationPrecoolAdvisor's own docstring for why that's safe here (a
+    schedule-driven term, not a feedback one, so none of the cascaded-control
+    risk that throttle exists for applies). The combined total is re-clipped
+    to `hvac.advisor_setpoint_min_c/max_c` -- the same authority bound the
+    general advisor's own recommendation was already clipped to -- so the
+    two additive terms can never together exceed what a single term alone
+    could already command.
     """
     cfg = cfg if cfg is not None else load_config()
     horizon = cfg["simulation"]["control_horizon_min"]
@@ -173,7 +187,18 @@ def run_controller(
         recommended = advisor.recommend_setpoint(inputs)
         if effective_setpoint_c is None or t % advisor_update_interval_min == 0:
             effective_setpoint_c = recommended
-        advised_setpoint_c = effective_setpoint_c
+        # M13: precool is additive and unthrottled -- see
+        # station_precool_advisor's own docstring paragraph above for why it
+        # bypasses advisor_update_interval_min while effective_setpoint_c
+        # itself does not. Re-clipped to the same authority bound
+        # AnticipatorySetpointAdvisor's own recommendation was already
+        # clipped to, so this can't grant MORE total authority than one term
+        # alone already had -- only lets both terms actually combine.
+        precool_shift_c = (station_precool_advisor.precool_shift_c(inputs)
+                            if station_precool_advisor is not None else 0.0)
+        hv = cfg["hvac"]
+        advised_setpoint_c = min(max(effective_setpoint_c + precool_shift_c,
+                                      hv["advisor_setpoint_min_c"]), hv["advisor_setpoint_max_c"])
         cmd = plant.respond(inputs.t_air_c, advised_setpoint_c)
         tint_level = tint_controller.recommend_tint(inputs) if tint_controller is not None else 0.0
         r = model.step(state, CabinInputs(
@@ -189,7 +214,7 @@ def run_controller(
         setpoint = model.setpoint(inputs.t_out_c)
         rows.append({
             "t": t, "t_air_c": r.t_air_c, "t_mass_c": r.t_mass_c, "setpoint_c": setpoint,
-            "advised_setpoint_c": advised_setpoint_c,
+            "advised_setpoint_c": advised_setpoint_c, "precool_shift_c": precool_shift_c,
             "err_c": r.t_air_c - setpoint, "n_pax": profile.n_pax[t],
             "door_open": profile.door_open[t], "in_tunnel": in_tunnel[t],
             "tint_level": tint_level, "q_solar_w": r.q_solar_w,

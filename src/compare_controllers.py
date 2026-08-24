@@ -161,6 +161,7 @@ def _compare_pair(
     baseline_factory: RowFactory, candidate_factory: RowFactory,
     baseline: str, candidate: str,
     advisor_update_interval_min: int = 1,
+    candidate_station_precool_advisor: object | None = None,
 ) -> pd.DataFrame:
     """Runs two controllers on every scenario, returns one row per scenario
     with both controllers' scores side by side and the deltas between them.
@@ -176,6 +177,14 @@ def _compare_pair(
     `advisor_update_interval_min` forwards to run_controller() (see its own
     docstring) -- applied identically to BOTH arms, same symmetry principle
     as sharing one PlantResponse mechanism.
+
+    `candidate_station_precool_advisor` (M13) is DELIBERATELY asymmetric,
+    unlike every other parameter here -- applied to the candidate arm only,
+    never the baseline. The claim M13 exists to demonstrate is specifically
+    "the AI anticipates a known stop, the dumb static schedule does not" --
+    giving BOTH arms the same precool would test a different, uninteresting
+    question (does precooling help regardless of who's doing it) and erase
+    the exact contrast this mechanism is for.
     """
     rows = []
     for row in scenarios.itertuples():
@@ -183,7 +192,8 @@ def _compare_pair(
                            direction=row.direction, pattern=row.pattern, load_factor=row.load_factor,
                            advisor_update_interval_min=advisor_update_interval_min)
         b = score(run_controller(baseline_factory(row), **run_kwargs), cfg)
-        c = score(run_controller(candidate_factory(row), **run_kwargs), cfg)
+        c = score(run_controller(candidate_factory(row), **run_kwargs,
+                                  station_precool_advisor=candidate_station_precool_advisor), cfg)
 
         rows.append({
             "scenario_id": row.scenario_id, "city": row.city, "date": str(row.date),
@@ -200,7 +210,9 @@ def _compare_pair(
 
 def compare(
     cfg: dict | None = None, scenarios: pd.DataFrame | None = None,
-    advisor_update_interval_min: int = SHIPPED_ADVISOR_UPDATE_INTERVAL_MIN, **advisor_kwargs,
+    advisor_update_interval_min: int = SHIPPED_ADVISOR_UPDATE_INTERVAL_MIN,
+    station_precool_advisor: object | None = None,
+    **advisor_kwargs,
 ) -> pd.DataFrame:
     """AnticipatorySetpointAdvisor vs ThermostatController -- "does smart
     control beat what real rail HVAC does today?" See the module docstring.
@@ -216,6 +228,11 @@ def compare(
     PlantResponse's own PI settling time), not run_controller()'s own raw
     default of 1 -- that raw default stays 1 specifically so a standalone
     ThermostatController-only run (no comparison happening) is unaffected.
+
+    `station_precool_advisor` (M13, default None = today's M12 behaviour,
+    unchanged) forwards to the candidate (AnticipatorySetpointAdvisor) arm
+    ONLY -- see _compare_pair()'s own docstring for why that asymmetry is
+    the point, not an oversight.
     """
     cfg = cfg if cfg is not None else load_config()
     booster = _load_booster()
@@ -226,6 +243,7 @@ def compare(
         candidate_factory=lambda row: _anticipatory_factory(cfg, booster, row, **advisor_kwargs),
         baseline="thermo", candidate="antic",
         advisor_update_interval_min=advisor_update_interval_min,
+        candidate_station_precool_advisor=station_precool_advisor,
     )
 
 

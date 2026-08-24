@@ -58,16 +58,28 @@ def test_app_runs_without_exception(require_model):
 def test_default_scenario_matches_the_cli_comparison_tool(require_model):
     """The exact check that caught nothing wrong when this app was first
     verified in a real browser, now automated: the app's displayed numbers
-    for its default (first) scenario must equal compare()'s output for
-    that same scenario -- not approximately, since it's the identical
-    code path, not a reimplementation.
+    for its default scenario must equal compare()'s output for that same
+    scenario -- not approximately, since it's the identical code path, not
+    a reimplementation.
+
+    scenario_id=140 (cairo, 2024-08-25, 8.93h), NOT scenarios.iloc[0] --
+    app.py's sidebar picker deliberately defaults there (M12), not to
+    whichever scenario_id sorts first. See app.py's own comment on that
+    selectbox: under M12's tuned cadence most scenarios are near-
+    indistinguishable or bit-identical (10/23), a weak opening view for a
+    live demo, so the default opens on the TEST-split scenario with the
+    cleanest illustrative story instead (+0.29% energy, zero comfort cost).
+    Caught by this exact test going red once already, the first time this
+    file's own default was changed without updating what this test expected
+    -- a real, if narrow, regression this test earned its keep catching.
     """
     at = AppTest.from_file("src/app.py", default_timeout=60).run()
     assert not at.exception
 
     scenarios = held_out_test_scenarios()
-    first = scenarios.iloc[[0]]
-    expected = compare(scenarios=first).iloc[0]
+    default = scenarios.loc[scenarios["scenario_id"] == 140]
+    assert len(default) == 1, "scenario_id=140 must still be in the TEST split for this test to mean anything"
+    expected = compare(scenarios=default).iloc[0]
 
     shown = _metric_values(at)
     assert shown["thermo_energy"] == f"{expected.thermo_energy_kwh:.2f} kWh"

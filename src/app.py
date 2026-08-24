@@ -35,7 +35,12 @@ import streamlit as st
 
 from src.compare_controllers import held_out_test_scenarios
 from src.config import load_config
-from src.controllers import SHIPPED_ADVISOR_UPDATE_INTERVAL_MIN, AnticipatorySetpointAdvisor, ThermostatController
+from src.controllers import (
+    SHIPPED_ADVISOR_UPDATE_INTERVAL_MIN,
+    AnticipatorySetpointAdvisor,
+    StationPrecoolAdvisor,
+    ThermostatController,
+)
 from src.evaluate import run_controller, score
 from src.features import LiveFeatureBuilder
 from src.tint_controller import AnticipatoryTintAdvisor, ReactiveTintController
@@ -110,6 +115,38 @@ def run_tint_comparison(city, date, depart_hour, direction, pattern, load_factor
         no_tint, reactive, anticipatory,
         score(no_tint, cfg), score(reactive, cfg), score(anticipatory, cfg),
     )
+
+
+@st.cache_data(show_spinner="Running the station-precool comparison...")
+def run_precool_comparison(city, date, depart_hour, direction, pattern, load_factor):
+    """M13: same scenario, same HVAC advisor -- ONLY station_precool_advisor
+    varies, so any difference is isolated to precooling's own effect, same
+    isolation principle as M11's tint comparison above. Deliberately not
+    applied to ThermostatController -- see compare_controllers.py's
+    _compare_pair() docstring on why this is asymmetric by design: the
+    claim is "the AI anticipates a known stop," not "precooling helps
+    regardless of who's doing it."
+    """
+    cfg = load_config()
+    booster = get_booster()
+    run_kwargs = dict(cfg=cfg, city=city, date=str(date), depart_hour=depart_hour,
+                       direction=direction, pattern=pattern, load_factor=load_factor,
+                       advisor_update_interval_min=SHIPPED_ADVISOR_UPDATE_INTERVAL_MIN)
+
+    def hvac_factory(model):
+        builder = LiveFeatureBuilder(cfg, city=city, direction=direction, pattern=pattern,
+                                      load_factor=load_factor, depart_hour=depart_hour)
+        return AnticipatorySetpointAdvisor(model, booster, builder)
+
+    without_precool = run_controller(hvac_factory, **run_kwargs)
+    with_precool = run_controller(
+        hvac_factory, **run_kwargs,
+        station_precool_advisor=StationPrecoolAdvisor(
+            lead_min=cfg["simulation"]["control_horizon_min"],
+            shift_k=cfg["hvac"]["station_precool_shift_k"],
+        ),
+    )
+    return without_precool, with_precool, score(without_precool, cfg), score(with_precool, cfg)
 
 
 st.title("Railflow — anticipatory HVAC vs. today's on/off control")
@@ -331,6 +368,72 @@ try:
         "a shaded/tunnel zone and starts darkening before direct sun arrives. Tunnel zones "
         "(config/cabin_params.yaml's tunnel_zones_min) are an illustrative demo device, not a claim "
         "about the real Cairo–Alexandria route — see that config key's comment."
+    )
+except FileNotFoundError as e:
+    st.error(f"Missing data file: {e.filename}.")
+
+st.divider()
+st.header("Station precool (M13)")
+st.caption(
+    "Same scenario, same HVAC advisor — only station_precool_advisor differs. A station stop is a "
+    "KNOWN, schedule-certain event (occupancy.py's time_to_next_station_min counts down exactly, "
+    "not a prediction): doors open, passengers board, heat and humidity load rises. Deliberately not "
+    "routed through the same forecast blend (ff_weight) as the general advisor — M10/M12 both found "
+    "that generic ML-forecast blend hurts aggregate energy/comfort; this targets one specific, "
+    "demonstrable event directly instead."
+)
+
+try:
+    without_precool_traj, with_precool_traj, without_precool_score, with_precool_score = (
+        run_precool_comparison(row.city, row.date, row.depart_hour, row.direction, row.pattern, row.load_factor)
+    )
+
+    door_t = with_precool_traj.loc[with_precool_traj["door_open"], "t"].tolist()
+    if door_t:
+        window = range(max(0, door_t[0] - 5), min(len(with_precool_traj), door_t[-1] + 11))
+        peak_without = without_precool_traj.loc[without_precool_traj["t"].isin(window), "t_air_c"].max()
+        peak_with = with_precool_traj.loc[with_precool_traj["t"].isin(window), "t_air_c"].max()
+    else:
+        peak_without = peak_with = float("nan")
+
+    pcol1, pcol2 = st.columns(2)
+    pcol1.metric("Peak cabin temp around stops — no precool", f"{peak_without:.1f} °C")
+    pcol2.metric("Peak cabin temp around stops — with precool", f"{peak_with:.1f} °C",
+                 f"{peak_with - peak_without:+.1f} °C")
+
+    fig_precool, ax_precool = plt.subplots(figsize=(11, 2.8))
+    if door_t:
+        # Same contiguous-run axvspan logic as the tunnel shading above --
+        # marks each station DWELL, not one span per minute.
+        run_start = prev = door_t[0]
+        first_label = True
+        for m in door_t[1:] + [None]:
+            if m is not None and m == prev + 1:
+                prev = m
+                continue
+            ax_precool.axvspan(run_start, prev + 1, color="gray", alpha=0.25,
+                                label="station stop" if first_label else None)
+            first_label = False
+            if m is not None:
+                run_start = prev = m
+    ax_precool.plot(without_precool_traj["t"], without_precool_traj["t_air_c"], color="#ff7f0e",
+                     linewidth=1.2, label="AI, no precool")
+    ax_precool.plot(with_precool_traj["t"], with_precool_traj["t_air_c"], color="#2ca02c",
+                     linewidth=1.2, label="AI + station precool")
+    ax_precool.set_ylabel("cabin temp (°C)")
+    ax_precool.set_xlabel("minute")
+    ax_precool.legend(loc="upper right", fontsize=8)
+    ax_precool.grid(alpha=0.3)
+    fig_precool.tight_layout()
+    st.pyplot(fig_precool)
+    st.caption(
+        f"Energy — no precool {without_precool_score.energy_kwh:.2f} kWh vs. with precool "
+        f"{with_precool_score.energy_kwh:.2f} kWh "
+        f"({100.0 * (1.0 - with_precool_score.energy_kwh / without_precool_score.energy_kwh):+.1f}%). "
+        "The green line drops ahead of each shaded stop and holds lower through it — banked thermal "
+        "headroom absorbing the boarding disturbance instead of the cabin warming through it. "
+        "shift_k (config/cabin_params.yaml's hvac.station_precool_shift_k) is a single constant, not "
+        "swept or trend-fitted — see StationPrecoolAdvisor's docstring in src/controllers.py."
     )
 except FileNotFoundError as e:
     st.error(f"Missing data file: {e.filename}.")
