@@ -88,7 +88,7 @@ def sweep(
         onoff = summarize(compare(swept_cfg, scenarios))
         ff = summarize(
             compare_feedforward_contribution(swept_cfg, scenarios),
-            baseline="proportional", candidate="anticipatory",
+            baseline="shipped", candidate="with_forecast",
         )
         rows.append({
             "tau_act_min": tau,

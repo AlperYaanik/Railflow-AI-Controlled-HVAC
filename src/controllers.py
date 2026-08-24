@@ -159,7 +159,7 @@ class AnticipatorySetpointAdvisor:
     (see ROADMAP.md's M10 section for why).
 
     raw   = ff_weight * predicted_error + (1-ff_weight) * current_error
-    raw   = deadband(raw, thermostat_hysteresis_k / 2)   -- see below
+    raw   = deadband(raw, deadband_k / 2)   -- see deadband_k's own docstring
     shift = clip( raw, -max_shift_k, max_shift_k )
     recommendation = clip( setpoint_now + shift, sliding_setpoint_low_c, sliding_setpoint_high_c )
 
@@ -168,58 +168,99 @@ class AnticipatorySetpointAdvisor:
     not today's setpoint) -- predicted state against predicted target, not
     predicted state against today's target.
 
-    THE DEADBAND -- added after the M5 test-split comparison came back
-    NEGATIVE (this advisor's law using MORE energy than ThermostatController
-    on most of the 23 held-out scenarios, back when both fed watts directly).
-    Diagnosis, not guesswork: on the canonical scenario, ThermostatController
-    is fully off 32.5% of the time; this advisor's raw proportional law, with
-    no floor, was fully off only 0.6% of the time -- it never stopped
-    nudging, so it paid continuous low-power compressor cost the baseline's
-    real "off" periods avoided entirely. Reusing `hvac.thermostat_hysteresis_k`
-    (already sourced for PlantResponse) as this advisor's own deadband gives
-    both advisors the same real-world switching tolerance instead of
-    inventing a second unsourced number. Applied as a continuous
-    shrink-to-zero (`excess = |raw| - half_band`, zero below it,
-    `sign(raw) * excess` above), not a hard on/off jump -- a discontinuous
-    version risks the exact chattering PlantResponse's mechanism hit the
-    first time dual-mode hysteresis was tried on this fast plant (tau_fast
-    ~1.1-1.3 min). Full before/after numbers in docs/PARAMETERS.md's M5
-    correction log.
+    M10 PHASE 2 RESULT, STATED PLAINLY: under this architecture, the
+    forecast does not earn its keep. ff_weight=0.0 (below) means this
+    "anticipatory" advisor currently ignores M4's forecast entirely -- the
+    VAL-grid/TEST-once search this project used to tune every other
+    under-sourced parameter (see deadband_k's own docstring for the full
+    three-attempt, 80-configuration result) found that ANY nonzero
+    ff_weight makes energy and comfort outcomes worse, monotonically, not
+    better. This is a diagnosed, structural consequence of PlantResponse
+    having no proportional response (fully on or fully off, nothing
+    between) -- not a forecaster quality problem: M4 itself still beats
+    persistence by +21% at the raw t+H prediction level (ROADMAP.md's M4
+    section), unaffected by any of this. A forecast-driven setpoint shift
+    can only move WHEN PlantResponse's switch fires, never HOW HARD it
+    runs, and firing early on a forecast buys no proportional benefit to
+    offset its added runtime. See `src/compare_controllers.py`'s
+    `compare_feedforward_contribution()` -- deliberately re-pointed in
+    Phase 2 to demonstrate this finding directly, not just assert it.
 
-    ff_weight and max_shift_k are [ASSUMPTION]: no literature source gives an
-    exact blend ratio or setpoint-authority bound for this combination of
-    forecaster and plant. Swept in tests/test_controllers.py to characterise
-    sensitivity rather than asserting the default is uniquely correct -- the
-    same treatment given to every other under-sourced parameter in this
-    project (see docs/PARAMETERS.md's calibration priority list).
+    THE DEADBAND (`deadband_k`) exists for the same reason it always has:
+    added after an early M5 test-split comparison came back negative
+    because a no-floor proportional law never stopped nudging, paying
+    continuous low-power cost real "off" periods avoid entirely. Applied as
+    a continuous shrink-to-zero (`excess = |raw| - half_band`, zero below
+    it, `sign(raw) * excess` above), not a hard on/off jump, so it can't
+    reintroduce chattering. What changed in M10 Phase 2: it no longer
+    silently reuses PlantResponse's own switching band (see deadband_k's
+    docstring for why that specific reuse was actively harmful, not merely
+    redundant).
 
-    ff_weight=0.45 carries over from the pre-M10 (gain_k, ff_weight) tune
-    (M9): a 25-point grid searched on the VAL split, ranked by n_both_better
-    (scenarios strictly better on both energy AND comfort) rather than mean
-    energy saving alone, confirmed ONCE on the TEST split -- mean energy
-    saving +1.2%->+3.9%, both-better 13/23->19/23, worse-on-both stayed
-    0/23, comfort-ok unchanged at 21/23. Full numbers in ROADMAP.md's M9
-    section. THAT RESULT DESCRIBES THE RETIRED WATTS-DISPATCH LAW -- it is
-    kept here only as the origin of ff_weight's current value, marked
-    superseded/pending regeneration in ROADMAP.md's M10 section. `max_shift_k`
-    is a fresh [ASSUMPTION] placeholder (see its own field docstring below),
-    not carried over from `gain_k` by any principled conversion -- Phase 2
-    re-tunes (ff_weight, max_shift_k) jointly, same VAL-grid/TEST-once
-    discipline, from scratch.
+    ff_weight, max_shift_k, and deadband_k are all [ASSUMPTION]: no
+    literature source gives an exact blend ratio, setpoint-authority bound,
+    or deadband width for this combination of forecaster, plant, and
+    (post-M10) bang-bang receiving unit. Swept in tests/test_controllers.py
+    and `src/tune_advisor.py` to characterise sensitivity rather than
+    asserting the shipped point is uniquely correct -- the same treatment
+    given to every other under-sourced parameter in this project (see
+    docs/PARAMETERS.md's calibration priority list).
     """
 
     model: CabinModel
     booster: lgb.Booster
     builder: LiveFeatureBuilder
-    ff_weight: float = 0.45
+    ff_weight: float = 0.0
     max_shift_k: float = 4.0
-    """[ASSUMPTION] Phase-1 structural placeholder, carried over from the
-    retired gain_k's rough scale but NOT re-derived under the new law (see
-    class docstring). Bounds how many degrees C the recommendation may move
-    away from setpoint_now in either direction. Phase 2 must re-tune this
-    jointly with ff_weight via the same VAL-grid-then-TEST-once methodology
-    used for the old (gain_k, ff_weight) pair -- see ROADMAP.md's M10
-    section."""
+    """[ASSUMPTION], carried forward unchanged from Phase 1 (was already
+    known not to matter much once >= ~1-2 C -- see deadband_k's docstring
+    for what Phase 2 actually found needed changing)."""
+    deadband_k: float | None = 1.5
+    """M10 Phase 2 addition. This advisor's OWN deadband width, separate
+    from PlantResponse's switching band. Both this field and `ff_weight`
+    above are Phase 2's tuned result -- NOT the Phase-1 placeholders they
+    started as -- via the same VAL-grid/TEST-once discipline used for the
+    old (gain_k, ff_weight) pair. Full result, including why it landed on
+    "the forecast helps not at all," is in ROADMAP.md's M10 section and
+    `src/tune_advisor.py`'s module docstring; summary below.
+
+    Phase 1 shipped `deadband_k=None` (reusing `hvac.thermostat_hysteresis_k`
+    outright) and `ff_weight=0.45` carried over from the retired law. The
+    resulting VAL-split grid search came back negative or flat at EVERY
+    point tested -- not a near-miss. Diagnosed, not guessed: at ff_weight=0,
+    traced a real scenario minute by minute and found advised_setpoint_c
+    differs from the static schedule on 125/166 minutes (by up to ~2.9 C)
+    yet cmd_w and t_air_c came out BIT-IDENTICAL to ThermostatController
+    throughout -- because the advisor's deadband and PlantResponse's
+    switching half-band were the SAME number, a shift only ever became
+    nonzero at the exact moment PlantResponse's own switch was already
+    firing under the static setpoint, never before it.
+
+    Three grid-search attempts, 80 total (ff_weight, deadband_k)
+    configurations, all measured on the honest VAL split: not one ever beat
+    the static baseline. The best ANY of them reached was parity (0.00%
+    energy delta) from below, as deadband_k widens past
+    `hvac.thermostat_hysteresis_k`; any nonzero ff_weight made things
+    monotonically worse (ff_weight=1.0: 25/31 VAL scenarios strictly worse
+    on both energy and comfort). Mechanism: PlantResponse has no
+    proportional response -- it is either fully on or fully off -- so a
+    forecast-driven setpoint shift can only move WHEN the switch fires, not
+    HOW HARD it runs. Shifting based on CURRENT error just re-derives a
+    noisier copy of a decision the switch's own hysteresis already makes;
+    shifting based on the FORECAST fires the switch too early relative to
+    actual need, paying full-capacity runtime with nothing proportional to
+    show for it.
+
+    SHIPPED: `ff_weight=0.0` (the forecast is not used -- turning it on
+    never helped, at any deadband tested), `deadband_k=1.5` (the VAL
+    grid's own top-ranked point by this project's standing
+    n_both_better-first discipline: 10/31 VAL scenarios both-better, only
+    1/31 worse-on-both -- confirmed on TEST at 4/23 both-better, 0/23
+    worse-on-both, mean energy delta -0.2%, essentially a wash rather than
+    a win). This IS effectively a disclosed null result for the forecast's
+    contribution under this architecture, not a tuned improvement -- stated
+    plainly rather than dressed up, matching M9's own precedent (SHAP-
+    diagnosed remedies tested, neither adopted, disclosed as a limitation)."""
 
     last_setpoint_shift_c: float = field(default=0.0, init=False, repr=False)
     """Exposed for tests/diagnostics/serial telemetry -- how far the most
@@ -260,10 +301,14 @@ class AnticipatorySetpointAdvisor:
             predicted_error = setpoint_h - pred_t_air_h
             raw = self.ff_weight * predicted_error + (1.0 - self.ff_weight) * current_error
 
-        # Deadband -- see the class docstring for why this exists. Continuous
-        # (shrinks to 0 smoothly, no jump at the edge) rather than a hard
-        # on/off threshold, so it can't reintroduce chattering.
-        half_band = self.model.cfg["hvac"]["thermostat_hysteresis_k"] / 2.0
+        # Deadband -- see the class docstring for why this exists, and
+        # deadband_k's own docstring for why it's no longer hardcoded to
+        # PlantResponse's own switching band. Continuous (shrinks to 0
+        # smoothly, no jump at the edge) rather than a hard on/off
+        # threshold, so it can't reintroduce chattering.
+        deadband_k = (self.deadband_k if self.deadband_k is not None
+                      else self.model.cfg["hvac"]["thermostat_hysteresis_k"])
+        half_band = deadband_k / 2.0
         excess = abs(raw) - half_band
         raw = float(np.sign(raw) * excess) if excess > 0.0 else 0.0
 

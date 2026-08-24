@@ -213,7 +213,7 @@ known limitation rather than a papered-over one (see ROADMAP.md's M9 §4b).
 Still open: the physical prototype, its own separately-scoped effort,
 blocked on real hardware measurements.
 
-**M10 Phase 1 complete.** The team was told the real HVAC unit's control
+**M10 complete, both phases.** The team was told the real HVAC unit's control
 electronics cannot be touched or modified without voiding the manufacturer's
 warranty, so the system's output was reframed: it now recommends a cabin
 setpoint (°C) instead of commanding power. `ThermostatController` turned out
@@ -222,13 +222,28 @@ that mechanism into its own `PlantResponse` class gave a stand-in for the
 real Control Unit this project never touches, and let `AnticipatoryController`
 (renamed `AnticipatorySetpointAdvisor`) reuse the exact same forecast+blend
 machinery while its final step changed from a watts dispatch to a setpoint
-recommendation. Verified with the full test suite (270 passed, 3 xfailed —
-exactly the directional M5/M6 comparisons pinned to the retired law's
-numbers, marked `xfail` rather than silently red) and the pinned
-`ThermostatController` regression staying byte-identical, confirming the
-split changed nothing about the baseline's actual behaviour. Regenerating
-M5/M6/M9's headline numbers under the new architecture is explicit,
-deliberately deferred **Phase 2** work — see ROADMAP.md's M10 section.
+recommendation.
+
+**Phase 2's honest result: parity, not a win.** Re-tuning `(ff_weight,
+deadband_k)` on the VAL split, confirmed once on TEST — the same discipline
+that produced the pre-M10 "+3.9%" headline — found that no configuration
+beats the static baseline once the setpoint recommendation is fed through a
+realistic on/off receiving unit (three attempts, 80 configurations tested,
+all flat or negative on VAL). Diagnosed, not shrugged off: a bang-bang unit
+has no proportional response, so a forecast-driven setpoint shift can only
+move WHEN the switch fires, never HOW HARD it runs. Shipped result
+(`ff_weight=0.0`, `deadband_k=1.5`): TEST mean energy delta −0.2% (median
++0.0%), 0/23 scenarios worse on both energy and comfort, aggregate
+degree-hours slightly lower despite per-scenario comfort improving on only
+19/23 — a disclosed null/parity finding for the forecast's contribution
+under this architecture, following the same honesty this project already
+applied to M9's SHAP-diagnosed, ultimately-not-adopted remedies. M4's
+forecaster itself is unaffected (+21% vs. persistence, unchanged) — this is
+a limit of what a bang-bang actuator can do with a good forecast, not a
+forecasting problem. Verified with the full test suite and the pinned
+`ThermostatController` regression staying byte-identical throughout. Full
+mechanism, all three tuning attempts, and what would actually be needed for
+the forecast to pay off are in ROADMAP.md's M10 section.
 
 ## License
 
