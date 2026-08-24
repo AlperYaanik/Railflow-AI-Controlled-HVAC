@@ -88,7 +88,7 @@ it and the trip plays forward automatically from wherever the slider is.
 | Metric | Meaning |
 |---|---|
 | Energy — on/off | How much electricity the old-style thermostat used on this trip |
-| Energy — anticipatory | How much the new controller used, and the % saved next to it |
+| Energy — anticipatory | How much the new controller used, and the % difference next to it (this scenario's actual number — can be a small saving or a small cost either way; see ROADMAP.md's M10 section for why the honest aggregate finding is parity, not a saving) |
 | Comfort — on/off | How far outside the comfort temperature band the old controller drifted, in total (lower is better) |
 | Comfort — anticipatory | Same, for the new controller |
 

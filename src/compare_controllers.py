@@ -17,14 +17,21 @@ LiveFeatureBuilder are shared code for the same reason).
   the M10 note in src/controllers.py. ThermostatController is an honest
   baseline (on/off with a sourced 1.5-2 K hysteresis band, not an
   unrealistically narrow strawman -- see docs/PARAMETERS.md). This is the
-  deployment-relevant number.
+  deployment-relevant number -- and, since M10 Phase 2's tuning (see
+  AnticipatorySetpointAdvisor's own docstring), the honest answer is
+  "no better than, not worse than" -- a disclosed parity finding, not the
+  pre-M10 "+3.9%" claim.
 
   compare_feedforward_contribution() -- the shipped AnticipatorySetpointAdvisor
-  (ff_weight=0.45) vs the SAME advisor/deadband forced to ff_weight=0.0
-  (pure proportional feedback, no ML forecast at all). "Does M4's forecaster
-  earn its keep on top of simple feedback?" An ablation, not a deployment
-  baseline. NOT a real PID -- no integral or derivative term -- and must
-  never be labelled as one; see its own docstring.
+  (ff_weight=0.0, itself Phase 2's tuned result) vs the SAME advisor/deadband
+  with the forecast deliberately forced ON (ff_weight=0.3). "Does M4's
+  forecaster earn its keep on top of what's shipped?" Re-pointed in M10
+  Phase 2 to demonstrate directly that the answer is no -- turning the
+  forecast on costs both energy and comfort under this architecture, a
+  diagnosed consequence of PlantResponse's lack of proportional response,
+  not a forecaster quality problem. An ablation, not a deployment baseline.
+  NOT a real PID -- no integral or derivative term -- and must never be
+  labelled as one; see its own docstring.
 
 Reporting only whichever of the two looks better in a given moment would be
 exactly the kind of selective reporting this project's honesty rules exist
@@ -65,9 +72,10 @@ RESULTS_PATH = DATA_DIR / "m5_test_split_comparison.csv"
 FEEDFORWARD_RESULTS_PATH = DATA_DIR / "m5_feedforward_contribution.csv"
 
 
-def held_out_test_scenarios() -> pd.DataFrame:
-    """One row per TEST-split scenario_id: the exact (city, date, depart_hour,
-    direction, pattern, load_factor) tuple data_generator.py drew for it.
+def _held_out_scenarios(split_name: str) -> pd.DataFrame:
+    """One row per `split_name`-split scenario_id: the exact (city, date,
+    depart_hour, direction, pattern, load_factor) tuple data_generator.py
+    drew for it.
 
     No `cfg` parameter -- which scenarios are held out depends only on
     calendar dates in scenarios_raw.parquet (see chronological_split), never
@@ -79,20 +87,35 @@ def held_out_test_scenarios() -> pd.DataFrame:
     """
     raw = pd.read_parquet(DATA_DIR / "scenarios_raw.parquet")
     split = chronological_split(raw)
-    test_ids = raw.loc[split == "test", "scenario_id"].unique()
+    ids = raw.loc[split == split_name, "scenario_id"].unique()
 
     cols = ["scenario_id", "city", "date", "depart_hour", "direction", "pattern", "load_factor"]
-    return (raw[raw["scenario_id"].isin(test_ids)][cols]
+    return (raw[raw["scenario_id"].isin(ids)][cols]
             .drop_duplicates("scenario_id")
             .sort_values("scenario_id")
             .reset_index(drop=True))
 
 
+def held_out_test_scenarios() -> pd.DataFrame:
+    """The 23 TEST-split scenarios every headline M5/M6 number is reported
+    against. See _held_out_scenarios() for what "held out" means here."""
+    return _held_out_scenarios("test")
+
+
+def held_out_val_scenarios() -> pd.DataFrame:
+    """M10 Phase 2: the VAL-split scenarios used to tune
+    (ff_weight, max_shift_k) -- never the TEST split, so the confirm-once-on-
+    TEST step afterward is measuring generalisation, not re-reading the same
+    scenarios the tuning already fit itself to. Same shape as
+    held_out_test_scenarios(), same non-goal of taking a `cfg` parameter."""
+    return _held_out_scenarios("val")
+
+
 def _thermostat_factory(row):
     """Ignores `row` -- ThermostatController has no per-scenario state to
-    match, unlike AnticipatoryController's LiveFeatureBuilder below. Takes
-    `row` anyway so _compare_pair can call every baseline/candidate factory
-    the same way regardless of which controller it wraps."""
+    match, unlike AnticipatorySetpointAdvisor's LiveFeatureBuilder below.
+    Takes `row` anyway so _compare_pair can call every baseline/candidate
+    factory the same way regardless of which controller it wraps."""
     def factory(model):
         return ThermostatController(model)
     return factory
@@ -169,16 +192,24 @@ def _compare_pair(
     return pd.DataFrame(rows)
 
 
-def compare(cfg: dict | None = None, scenarios: pd.DataFrame | None = None) -> pd.DataFrame:
-    """AnticipatoryController vs ThermostatController -- "does smart control
-    beat what real rail HVAC does today?" See the module docstring."""
+def compare(
+    cfg: dict | None = None, scenarios: pd.DataFrame | None = None, **advisor_kwargs,
+) -> pd.DataFrame:
+    """AnticipatorySetpointAdvisor vs ThermostatController -- "does smart
+    control beat what real rail HVAC does today?" See the module docstring.
+
+    `**advisor_kwargs` forwards to AnticipatorySetpointAdvisor -- e.g.
+    `ff_weight=...`, `max_shift_k=...` for M10 Phase 2's VAL-split tuning
+    (`src/tune_advisor.py`). Empty by default, so every existing caller
+    keeps getting the class's own shipped defaults, unchanged.
+    """
     cfg = cfg if cfg is not None else load_config()
     booster = _load_booster()
     scenarios = scenarios if scenarios is not None else held_out_test_scenarios()
     return _compare_pair(
         cfg, scenarios,
         baseline_factory=_thermostat_factory,
-        candidate_factory=lambda row: _anticipatory_factory(cfg, booster, row),
+        candidate_factory=lambda row: _anticipatory_factory(cfg, booster, row, **advisor_kwargs),
         baseline="thermo", candidate="antic",
     )
 
@@ -186,29 +217,34 @@ def compare(cfg: dict | None = None, scenarios: pd.DataFrame | None = None) -> p
 def compare_feedforward_contribution(
     cfg: dict | None = None, scenarios: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
-    """The shipped AnticipatoryController (ff_weight=0.6) vs the SAME
-    controller and deadband forced to ff_weight=0.0 -- pure proportional
-    feedback, no ML forecast involved at all. "Does M4's forecaster earn its
-    keep on top of simple feedback, holding everything else fixed?" A
-    different question from compare(): not "beats today's rail HVAC" but
-    "the forecast specifically is worth having".
+    """The shipped AnticipatorySetpointAdvisor (ff_weight=0.0 -- itself
+    Phase 2's own VAL-grid/TEST-once tuned result, not an arbitrary choice;
+    see the class's docstring in src/controllers.py) vs the SAME advisor and
+    deadband with the forecast deliberately forced ON (ff_weight=0.3, the
+    least-bad nonzero point that same grid found). "Does M4's forecaster
+    earn its keep on top of what's actually shipped?" A different question
+    from compare(): not "beats today's rail HVAC" but "the forecast
+    specifically is worth having, here" -- re-pointed in M10 Phase 2 (it
+    used to compare the shipped, forecast-using controller against a
+    forced-proportional baseline; today the shipped controller IS the
+    proportional one, so this now demonstrates directly, rather than merely
+    asserts, that deliberately turning the forecast back on makes things
+    worse under this architecture -- see ROADMAP.md's M10 section.
 
-    NOT A PID CONTROLLER. ff_weight=0.0 gives pure P (proportional) control
-    plus the deadband -- no integral term (so no correction for a sustained
-    steady-state offset under continuous solar/passenger/fresh-air load) and
-    no derivative term. Calling this "PID" on a slide would be the same kind
-    of unearned claim this project already renamed once (see controllers.py:
-    "Smith predictor" -> "learned-model anticipatory controller"). A real
-    P+I+D baseline is a separate, not-yet-built controller.
+    NOT A PID CONTROLLER. Neither arm has an integral or derivative term.
+    Calling this "PID" on a slide would be the same kind of unearned claim
+    this project already renamed once (see controllers.py: "Smith
+    predictor" -> "learned-model anticipatory controller"). A real P+I+D
+    baseline is a separate, not-yet-built controller.
     """
     cfg = cfg if cfg is not None else load_config()
     booster = _load_booster()
     scenarios = scenarios if scenarios is not None else held_out_test_scenarios()
     return _compare_pair(
         cfg, scenarios,
-        baseline_factory=lambda row: _anticipatory_factory(cfg, booster, row, ff_weight=0.0),
-        candidate_factory=lambda row: _anticipatory_factory(cfg, booster, row),
-        baseline="proportional", candidate="anticipatory",
+        baseline_factory=lambda row: _anticipatory_factory(cfg, booster, row),
+        candidate_factory=lambda row: _anticipatory_factory(cfg, booster, row, ff_weight=0.3),
+        baseline="shipped", candidate="with_forecast",
     )
 
 
@@ -219,7 +255,7 @@ def summarize(results: pd.DataFrame, baseline: str = "thermo", candidate: str = 
 
     `baseline`/`candidate` must match the column stems in `results` (see
     _compare_pair) -- defaults suit compare()'s output; pass
-    baseline="proportional", candidate="anticipatory" for
+    baseline="shipped", candidate="with_forecast" for
     compare_feedforward_contribution()'s output instead. The OUTPUT dict's
     keys are fixed regardless of which comparison produced `results`, so a
     caller doesn't need to know which one it's holding.
@@ -273,7 +309,7 @@ if __name__ == "__main__":
 
     ff_results = compare_feedforward_contribution(cfg)
     ff_results.to_csv(FEEDFORWARD_RESULTS_PATH, index=False)
-    _print_summary("M5 comparison 2/2: Anticipatory vs proportional-only (NOT a real PID -- see docstring)",
-                    summarize(ff_results, baseline="proportional", candidate="anticipatory"),
-                    "proportional-only", "anticipatory")
+    _print_summary("M5 comparison 2/2: shipped (ff_weight=0) vs forecast forced ON (NOT a real PID -- see docstring)",
+                    summarize(ff_results, baseline="shipped", candidate="with_forecast"),
+                    "shipped", "with_forecast")
     print(f"saved to {FEEDFORWARD_RESULTS_PATH}")

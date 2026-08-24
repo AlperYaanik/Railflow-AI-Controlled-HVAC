@@ -69,14 +69,18 @@ scenario than the default.
 Point at each metric column in turn.
 > "Energy, on the left, is the on/off thermostat baseline -- a realistic
 > baseline with a sourced hysteresis band, not a strawman. Next to it, the
-> anticipatory controller's energy, with the percentage saved. Comfort is
-> degree-hours outside the setpoint band -- lower is better -- baseline
-> first, then anticipatory."
+> anticipatory advisor's energy, with the delta shown next to it -- this
+> scenario's number, not a promised saving. Comfort is degree-hours outside
+> the setpoint band -- lower is better -- baseline first, then anticipatory."
 
 Do **not** read out a specific saving percentage as if it's the headline
-number for every scenario -- it varies scenario to scenario by design (see
-ROADMAP.md's M5 section for the aggregate, honest number). Say what the
-metric *is*, let the on-screen number for whichever scenario is showing
+number for every scenario -- it varies scenario to scenario by design, and
+since M10's re-tune (see ROADMAP.md's M10 section) the honest aggregate
+finding is PARITY, not a saving: mean energy delta -0.2% on the TEST split,
+essentially a wash, with 0/23 scenarios worse on both energy and comfort and
+slightly lower total degree-hours in aggregate. Do not narrate this as "the
+AI saves energy" -- say what the metric *is*, let the on-screen number for
+whichever scenario is showing
 speak for itself.
 
 **0:50-1:05 -- Playback.**

@@ -483,20 +483,17 @@ meant before.
 ### Anticipatory controller blend (M5)
 
 **M10 status: this entire section describes the retired watts-dispatch
-law — superseded, kept for the record, pending Phase-2 regeneration.**
-`gain_k` (below) no longer exists in the code: `AnticipatoryController` was
-renamed `AnticipatorySetpointAdvisor` and its dispatch tail rewritten to
-recommend a setpoint shift (°C) instead of a capacity fraction (W), so
-Railflow's compute never has to touch a real HVAC unit's control
-electronics (see ROADMAP.md's M10 section). Its replacement, `max_shift_k`,
-is a **different physical quantity** — a setpoint-authority bound in
-degrees C, not a capacity-fraction gain — currently a fresh, untuned
-`[ASSUMPTION]` placeholder, not derived from `gain_k` by any principled
-conversion. `ff_weight` survives structurally (the feedforward/feedback
-blend itself is unchanged) but still needs re-tuning jointly with
-`max_shift_k`, since the law downstream of the blend changed. Everything
-below describes what was true of the retired law; kept visible rather than
-deleted, same as every other superseded number in this document.
+law — superseded, kept for the record.** `gain_k` (below) no longer exists
+in the code: `AnticipatoryController` was renamed `AnticipatorySetpointAdvisor`
+and its dispatch tail rewritten to recommend a setpoint shift (°C) instead
+of a capacity fraction (W), so Railflow's compute never has to touch a real
+HVAC unit's control electronics (see ROADMAP.md's M10 section). Its
+replacement, `max_shift_k`, is a **different physical quantity** — a
+setpoint-authority bound in degrees C, not a capacity-fraction gain.
+Everything below describes what was true of the retired law; kept visible
+rather than deleted, same as every other superseded number in this
+document. **Phase 2 has since re-tuned `(ff_weight, deadband_k)` under the
+new law — see the result at the end of this section.**
 
 `ff_weight = 0.45` (M9, down from the original `0.6`), `gain_k = 3.0` — the
 feedforward (M4 forecast) / feedback (current error) blend ratio and control
@@ -570,6 +567,27 @@ used" applies in reverse here too: pure feedback alone isn't the free
 option either — it is measurably worse on comfort). **Not a PID comparison**
 — `ff_weight=0` has no integral or derivative term, so do not present it as
 one.
+
+**M10 Phase 2 — `(ff_weight, deadband_k)`, the replacement tune, and a
+different kind of result than every tune above.** Same discipline (VAL-grid,
+`n_both_better`-ranked, TEST-confirmed once) applied to the new law found
+that no configuration beats the static baseline — three attempts, 80
+`(ff_weight, deadband_k)` points tested on VAL, all flat or negative. `[ASSUMPTION]`
+status is unchanged (still no literature source for these numbers), but the
+*finding* is new: `deadband_k` (this advisor's own deadband, previously
+hardcoded to reuse `PlantResponse`'s switching band outright) turned out to
+matter more than `ff_weight` — reusing the same threshold for both meant a
+setpoint shift only ever confirmed a decision `PlantResponse`'s hysteresis
+was already making, never pre-empted one, diagnosed by tracing a real
+scenario minute by minute (`advised_setpoint_c` differed from the static
+schedule 125/166 minutes, yet `cmd_w`/`t_air_c` came out bit-identical to
+`ThermostatController` throughout). Shipped: `ff_weight=0.0` (the forecast
+contributes nothing positive under this architecture — confirmed, not
+assumed: forcing it back on made energy strictly worse in every one of 23
+TEST scenarios), `deadband_k=1.5` (the search's own top-ranked point, TEST
+mean energy delta −0.2%, 0/23 worse-on-both, aggregate degree-hours slightly
+lower). Full numbers and the mechanism in ROADMAP.md's M5 section (bottom)
+and `src/tune_advisor.py`'s module docstring.
 
 ### Cooling capacity — raised from 30 kW during the M1 audit
 
@@ -819,6 +837,12 @@ characteristics, something Railflow was never going to be able to measure or
 control in the first place. Still genuinely unknown, still swept rather than
 asserted, arguably a more honest framing of what was already an
 [ASSUMPTION] than the pre-M10 one.
+
+**M10 Phase 2 re-sweep: parity holds across the entire range, not just at
+the default.** Re-run against the tuned `(ff_weight=0.0, deadband_k=1.5)`
+law, energy delta stays within +0.19%/−0.17% across all five swept values —
+there is no longer a strong dependence on this unknown to characterise, at
+either end of the range. See ROADMAP.md's M6 section for the full table.
 
 ---
 
