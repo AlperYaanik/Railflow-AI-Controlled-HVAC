@@ -59,6 +59,12 @@ class OccupancyProfile:
     time_to_next_station_min: list[int]
     expected_boarding: list[int]
     stations: list[Station] = field(default_factory=list)
+    in_tunnel: list[bool] = field(default_factory=list)
+    """M11: True on minutes inside a configured route.tunnel_zones_min entry
+    -- see that config key's docstring for what this is and isn't a claim
+    about. Empty list (falsy, same as every other field's implicit "off"
+    default) for any Service built before M11 or against a config with no
+    tunnel_zones_min key, so existing callers see no behaviour change."""
 
     def __len__(self) -> int:
         return len(self.n_pax)
@@ -206,6 +212,15 @@ def simulate(service: Service, cfg: dict | None = None) -> OccupancyProfile:
     at_station = [-1] * total_min
     time_to_next = [0] * total_min
     expected_boarding = [0] * total_min
+    in_tunnel = [False] * total_min
+    # M11: tunnel_zones_min is defined by minute-into-journey, same direction
+    # both ways -- deliberately NOT mirrored/reversed for the "up" direction
+    # the way stations are (see build_route()'s docstring), since these are
+    # illustrative route-position markers, not a real asymmetric timetable
+    # feature worth that complexity. See the config key's own docstring.
+    for zone in cfg.get("route", {}).get("tunnel_zones_min", []):
+        for t in range(max(0, zone["start_min"]), min(total_min, zone["end_min"])):
+            in_tunnel[t] = True
 
     # Passenger exchange is resolved at arrival: alighting first, then boarding.
     # Both then sit aboard for the whole dwell, which is the conservative choice
@@ -245,6 +260,7 @@ def simulate(service: Service, cfg: dict | None = None) -> OccupancyProfile:
         time_to_next_station_min=time_to_next,
         expected_boarding=expected_boarding,
         stations=stations,
+        in_tunnel=in_tunnel,
     )
 
 

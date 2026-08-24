@@ -101,7 +101,55 @@ MAX_SHIFT_K = 4.0
 matters once >= ~1-2 C, since the result is clamped to the 4.0-C-wide
 sliding-setpoint envelope regardless."""
 
+SHIPPED_FF_WEIGHT = 0.0
+SHIPPED_DEADBAND_K = 1.5
+
+UPDATE_INTERVAL_GRID_MIN = (1, 2, 5, 10, 15, 20)
+"""ATTEMPT 4 -- a dimension none of attempts 1-3 ever varied: how often the
+EFFECTIVE (PlantResponse-facing) setpoint updates, as opposed to holding the
+last recommendation fixed for a few minutes at a time (src/evaluate.py's
+`advisor_update_interval_min`, added for exactly this test). Prompted by a
+real, well-grounded question, independent of this project's own reasoning:
+does recomputing every single minute just add chatter a bang-bang receiver
+can't usefully react to before the next change arrives -- structurally the
+same argument that already set M8's 30 s telemetry cadence
+(docs/serial_protocol.md Sec 5: the actuator's own lag, not the link's
+update rate, is the real bottleneck). Range chosen around the actuator's own
+assumed response (`dead_time_min` + `tau_act_min` ~= 2 + 5 = 7 min,
+`config/cabin_params.yaml`): 1 (today's shipped behaviour, included as the
+reference point) up to 20 (comfortably under the 30 min forecast horizon,
+matching M6's own tau_act sweep ceiling for the same reason).
+
+Held fixed at the shipped (ff_weight, deadband_k) point while sweeping this,
+deliberately -- isolates whether update cadence alone moves the needle
+before spending compute on a full re-cross of all three dimensions.
+
+RESULT: spacing it out makes things WORSE, not better, and not by a little
+-- interval=1 (today's shipped default) is the clear VAL winner (mean
+-0.04%, 10/31 both-better); every wider interval is worse, bottoming out at
+interval=20 (mean -1.90%, only 2/31 both-better, 15/31 worse-on-both -- the
+single worst point found across all four tuning attempts). Confirmed on
+TEST at interval=1: mean -0.17%, median +0.00%, 4/23 both-better, 0/23
+worse-on-both -- consistent with attempts 1-3's shipped-point numbers, as
+it should be, since interval=1 IS the shipped default.
+
+WHY THE M8 ANALOGY DOESN'T TRANSFER, DIAGNOSED RATHER THAN LEFT AS A
+SURPRISE: M8's 30 s cadence is about how often a value needs to CROSS A
+COMMUNICATION LINK to a physically slow actuator -- sending faster than the
+actuator can respond wastes bandwidth, not compute. Here there is no link
+and no bandwidth cost: recomputing the recommendation every minute is pure
+arithmetic, and PlantResponse's own hysteresis (not the advisor's update
+rate) is what already prevents actuator chatter -- that's what the
+deadband and hysteresis band are FOR. Holding the recommendation fixed
+doesn't reduce chatter PlantResponse wasn't going to have anyway; it only
+makes the recommendation stale relative to the cabin's actual, continuously
+evolving state, which the current_error term is specifically there to
+track. Staleness has a cost and no offsetting benefit here -- confirmed
+empirically, not merely argued.
+"""
+
 RESULTS_PATH = DATA_DIR / "m10_advisor_tune.csv"
+UPDATE_INTERVAL_RESULTS_PATH = DATA_DIR / "m10_advisor_update_interval_sweep.csv"
 
 _RANK_COLUMNS = ["n_both_better", "mean_energy_saving_pct"]
 _RANK_ASCENDING = [False, False]
@@ -140,6 +188,33 @@ def pick_winner(grid: pd.DataFrame) -> tuple[float, float]:
     ranked = grid.sort_values(_RANK_COLUMNS, ascending=_RANK_ASCENDING)
     top = ranked.iloc[0]
     return float(top["ff_weight"]), float(top["deadband_k"])
+
+
+def sweep_update_interval(cfg: dict | None = None, scenarios: pd.DataFrame | None = None) -> pd.DataFrame:
+    """ATTEMPT 4 -- see UPDATE_INTERVAL_GRID_MIN's docstring. Holds the
+    shipped (ff_weight, deadband_k) fixed, sweeps advisor_update_interval_min
+    alone on the given scenarios (VAL by default)."""
+    cfg = cfg if cfg is not None else load_config()
+    scenarios = scenarios if scenarios is not None else held_out_val_scenarios()
+
+    rows = []
+    for interval in UPDATE_INTERVAL_GRID_MIN:
+        s = summarize(compare(
+            cfg, scenarios,
+            ff_weight=SHIPPED_FF_WEIGHT, max_shift_k=MAX_SHIFT_K, deadband_k=SHIPPED_DEADBAND_K,
+            advisor_update_interval_min=interval,
+        ))
+        rows.append({
+            "advisor_update_interval_min": interval,
+            "mean_energy_saving_pct": s["mean_energy_saving_pct"],
+            "median_energy_saving_pct": s["median_energy_saving_pct"],
+            "n_both_better": s["n_both_better"],
+            "n_worse_on_both": s["n_worse_on_both"],
+            "n_comfort_equal_or_better": s["n_comfort_equal_or_better"],
+            "n_energy_better": s["n_energy_better"],
+            "n_scenarios": s["n_scenarios"],
+        })
+    return pd.DataFrame(rows)
 
 
 if __name__ == "__main__":

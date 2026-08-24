@@ -36,15 +36,19 @@ Tests and scripts that need weather/data/model skip with an actionable message
 python -m pytest tests/ -q
 ```
 
-273 tests — 270 passing, 3 `xfail` (the M5/M6 directional comparisons,
-pinned to numbers the M10 output reframing retired — see `ROADMAP.md`'s M10
-section; not silently red or deleted). Physics (free-float convergence,
-derived time constants, actuator behaviour, numerical convergence, the M9
-humidity moisture balance including its saturation cap), timetable/occupancy
-invariants, feature engineering (leakage checks, batch/live equivalence),
-the forecaster (chronological split, beats persistence), the setpoint
-advisors and shared plant response (regression guards for two real bugs
-found during development — see `docs/PARAMETERS.md`),
+283 tests, all passing — the earlier 3 `xfail` (M5/M6 directional
+comparisons pinned to the pre-M10 watts-dispatch law) are gone, not because
+they were deleted, but because M10 Phase 2's re-tune earned honest,
+currently-passing assertions in their place (see `ROADMAP.md`'s M10
+section). Physics (free-float convergence, derived time constants, actuator
+behaviour, numerical convergence, the M9 humidity moisture balance including
+its saturation cap), timetable/occupancy invariants (M11: including
+tunnel-zone wiring), feature engineering (leakage checks, batch/live
+equivalence), the forecaster (chronological split, beats persistence), the
+setpoint advisors and shared plant response (regression guards for two real
+bugs found during development — see `docs/PARAMETERS.md`), M11's window-tint
+controllers (solar-gain physics, tunnel masking, anticipatory-vs-reactive
+timing),
 the M5 comparison harness, the M6 actuator-lag sweep, the M7 Streamlit
 demo (headless `AppTest`, including that a missing model/dataset/weather
 file each produce a clean actionable error rather than a crash), the M8 serial
@@ -240,10 +244,30 @@ under this architecture, following the same honesty this project already
 applied to M9's SHAP-diagnosed, ultimately-not-adopted remedies. M4's
 forecaster itself is unaffected (+21% vs. persistence, unchanged) — this is
 a limit of what a bang-bang actuator can do with a good forecast, not a
-forecasting problem. Verified with the full test suite and the pinned
-`ThermostatController` regression staying byte-identical throughout. Full
-mechanism, all three tuning attempts, and what would actually be needed for
-the forecast to pay off are in ROADMAP.md's M10 section.
+forecasting problem. A fourth attempt tested whether the setpoint
+recommendation updating every minute was itself the problem (spacing it out
+to reduce "chatter," the same reasoning behind M8's 30 s telemetry cadence)
+— confirmed the opposite: spacing it out makes things worse, since nothing
+here has M8's physical-actuator/bandwidth constraint. Verified with the full
+test suite and the pinned `ThermostatController` regression staying
+byte-identical throughout. Full mechanism, all four tuning attempts, and
+what would actually be needed for the forecast to pay off are in
+ROADMAP.md's M10 section.
+
+**M11: AI-controlled window tinting, built and demoed.** First-round judges
+flagged that auto-dimming SPD glass reacting to its own sensor isn't novel;
+the differentiator is anticipatory control using the same forecast lookahead
+already built for HVAC. `AnticipatoryTintAdvisor` reacts to forecasted GHI
+(`ghi_fcst_h`) instead of current GHI, so it clears the glass ahead of a
+tunnel/shaded zone instead of only after entering it — verified directly,
+not just eyeballed off a chart (`tests/test_tint_controller.py`). Tinting is
+now wired into the actual solar-gain physics (`CabinInputs.tint_level`
+slides effective SHGC between a clear and a fully-tinted value), so its
+energy benefit is real, not cosmetic: on the demo's default scenario, energy
+drops from 36.95 kWh (no tint) to 34.49–34.67 kWh (reactive/anticipatory,
+roughly tied on this particular scenario). Deliberately rule-based rather
+than a trained model, matching the team's own explicit scope guidance for
+this milestone. Full detail in ROADMAP.md's M11 section.
 
 ## License
 

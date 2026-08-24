@@ -38,6 +38,7 @@ from src.config import load_config
 from src.controllers import AnticipatorySetpointAdvisor, ThermostatController
 from src.evaluate import run_controller, score
 from src.features import LiveFeatureBuilder
+from src.tint_controller import AnticipatoryTintAdvisor, ReactiveTintController
 from src.train import MODEL_PATH
 
 st.set_page_config(page_title="Railflow", layout="wide")
@@ -75,6 +76,33 @@ def run_both(city, date, depart_hour, direction, pattern, load_factor):
 
     antic_traj = run_controller(antic_factory, **run_kwargs)
     return thermo_traj, antic_traj, score(thermo_traj, cfg), score(antic_traj, cfg)
+
+
+@st.cache_data(show_spinner="Running the window-tint comparison...")
+def run_tint_comparison(city, date, depart_hour, direction, pattern, load_factor):
+    """M11: same scenario, same HVAC advisor (AnticipatorySetpointAdvisor) in
+    all three runs -- ONLY the tint controller varies -- so any energy
+    difference is isolated to tinting's effect, not conflated with a
+    different HVAC decision. See src/tint_controller.py's module docstring
+    for why both tint controllers are rule-based rather than trained.
+    """
+    cfg = load_config()
+    booster = get_booster()
+    run_kwargs = dict(cfg=cfg, city=city, date=str(date), depart_hour=depart_hour,
+                       direction=direction, pattern=pattern, load_factor=load_factor)
+
+    def hvac_factory(model):
+        builder = LiveFeatureBuilder(cfg, city=city, direction=direction, pattern=pattern,
+                                      load_factor=load_factor, depart_hour=depart_hour)
+        return AnticipatorySetpointAdvisor(model, booster, builder)
+
+    no_tint = run_controller(hvac_factory, tint_controller=None, **run_kwargs)
+    reactive = run_controller(hvac_factory, tint_controller=ReactiveTintController(), **run_kwargs)
+    anticipatory = run_controller(hvac_factory, tint_controller=AnticipatoryTintAdvisor(), **run_kwargs)
+    return (
+        no_tint, reactive, anticipatory,
+        score(no_tint, cfg), score(reactive, cfg), score(anticipatory, cfg),
+    )
 
 
 st.title("Railflow — anticipatory HVAC vs. today's on/off control")
@@ -222,6 +250,66 @@ st.caption(
     "moisture while cooling, so both read as an upper bound during active cooling, not a corrected "
     "true value. See ROADMAP.md's M9 section."
 )
+
+st.divider()
+st.header("Window tinting (M11)")
+st.caption(
+    "Same scenario, same HVAC advisor (AnticipatorySetpointAdvisor) in all three runs — only the "
+    "tint controller changes, so any energy difference here is isolated to tinting's effect, not "
+    "mixed in with a different HVAC decision. See src/tint_controller.py: both tint controllers are "
+    "deliberately rule-based, not trained models — the anticipatory-vs-reactive contrast is what's "
+    "being demonstrated."
+)
+
+try:
+    no_tint_traj, reactive_traj, antic_tint_traj, no_tint_score, reactive_score, antic_tint_score = (
+        run_tint_comparison(row.city, row.date, row.depart_hour, row.direction, row.pattern, row.load_factor)
+    )
+
+    tcol1, tcol2, tcol3 = st.columns(3)
+    tcol1.metric("Energy — no tint", f"{no_tint_score.energy_kwh:.2f} kWh")
+    reactive_pct = 100.0 * (1.0 - reactive_score.energy_kwh / no_tint_score.energy_kwh)
+    tcol2.metric("Energy — reactive tint (SPD-style)", f"{reactive_score.energy_kwh:.2f} kWh",
+                 f"{reactive_pct:+.1f}%")
+    antic_pct = 100.0 * (1.0 - antic_tint_score.energy_kwh / no_tint_score.energy_kwh)
+    tcol3.metric("Energy — anticipatory tint", f"{antic_tint_score.energy_kwh:.2f} kWh",
+                 f"{antic_pct:+.1f}%")
+
+    fig_tint, ax_tint = plt.subplots(figsize=(11, 2.8))
+    tunnel_t = antic_tint_traj.loc[antic_tint_traj["in_tunnel"], "t"].tolist()
+    if tunnel_t:
+        # One axvspan per CONTIGUOUS tunnel run, not one per minute.
+        run_start = prev = tunnel_t[0]
+        first_label = True
+        for m in tunnel_t[1:] + [None]:  # None is a sentinel that flushes the last run
+            if m is not None and m == prev + 1:
+                prev = m
+                continue
+            ax_tint.axvspan(run_start, prev + 1, color="gray", alpha=0.25,
+                             label="tunnel" if first_label else None)
+            first_label = False
+            if m is not None:
+                run_start = prev = m
+    ax_tint.plot(reactive_traj["t"], reactive_traj["tint_level"], color="#ff7f0e", linewidth=1.2,
+                 label="reactive (SPD-style)")
+    ax_tint.plot(antic_tint_traj["t"], antic_tint_traj["tint_level"], color="#2ca02c", linewidth=1.2,
+                 label="anticipatory")
+    ax_tint.set_ylabel("tint level\n(0=clear, 1=dark)")
+    ax_tint.set_xlabel("minute")
+    ax_tint.set_ylim(-0.05, 1.05)
+    ax_tint.legend(loc="upper right", fontsize=8)
+    ax_tint.grid(alpha=0.3)
+    fig_tint.tight_layout()
+    st.pyplot(fig_tint)
+    st.caption(
+        "Reactive tint only responds once GHI has already changed; anticipatory tint reacts to the "
+        "same t+H forecast the HVAC advisor already uses (ghi_fcst_h), so it starts clearing before "
+        "a shaded/tunnel zone and starts darkening before direct sun arrives. Tunnel zones "
+        "(config/cabin_params.yaml's tunnel_zones_min) are an illustrative demo device, not a claim "
+        "about the real Cairo–Alexandria route — see that config key's comment."
+    )
+except FileNotFoundError as e:
+    st.error(f"Missing data file: {e.filename}.")
 
 with st.expander("What this scenario looked like going in"):
     st.dataframe(row.drop("label").to_frame().T, hide_index=True)

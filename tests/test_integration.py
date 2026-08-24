@@ -82,8 +82,12 @@ def _equilibrium_temperature(cfg, model, t_out, ghi, n_pax):
     enough on its own to push the hottest hours outside the comfort band.
     """
     ua = envelope_ua(cfg) + ventilation_ua(cfg, n_pax)
+    # M11: model.solar_aperture was split into glazing_aperture_m2 * shgc_clear
+    # (renamed, not removed) when tint_level became a controllable input --
+    # shgc_clear is tint_level=0.0's SHGC, i.e. exactly the untinted value
+    # this pre-M11 test is checking, unchanged in meaning or number.
     q_int = (n_pax * cfg["occupancy"]["sensible_heat_w_per_pax"]
-             + ghi * model.solar_aperture
+             + ghi * model.glazing_aperture_m2 * model.shgc_clear
              + model.supply_fan_w)
     return (ua * t_out + q_int + model.supply_ua * model.supply_min_c) / (ua + model.supply_ua)
 

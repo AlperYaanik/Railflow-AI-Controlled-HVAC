@@ -160,6 +160,7 @@ def _compare_pair(
     cfg: dict, scenarios: pd.DataFrame,
     baseline_factory: RowFactory, candidate_factory: RowFactory,
     baseline: str, candidate: str,
+    advisor_update_interval_min: int = 1,
 ) -> pd.DataFrame:
     """Runs two controllers on every scenario, returns one row per scenario
     with both controllers' scores side by side and the deltas between them.
@@ -171,11 +172,16 @@ def _compare_pair(
     "thermo"/"antic", or "proportional"/"anticipatory") so each comparison's
     output is self-describing rather than every column always saying
     "thermo" regardless of what's actually being compared.
+
+    `advisor_update_interval_min` forwards to run_controller() (see its own
+    docstring) -- applied identically to BOTH arms, same symmetry principle
+    as sharing one PlantResponse mechanism.
     """
     rows = []
     for row in scenarios.itertuples():
         run_kwargs = dict(cfg=cfg, city=row.city, date=str(row.date), depart_hour=row.depart_hour,
-                           direction=row.direction, pattern=row.pattern, load_factor=row.load_factor)
+                           direction=row.direction, pattern=row.pattern, load_factor=row.load_factor,
+                           advisor_update_interval_min=advisor_update_interval_min)
         b = score(run_controller(baseline_factory(row), **run_kwargs), cfg)
         c = score(run_controller(candidate_factory(row), **run_kwargs), cfg)
 
@@ -193,7 +199,8 @@ def _compare_pair(
 
 
 def compare(
-    cfg: dict | None = None, scenarios: pd.DataFrame | None = None, **advisor_kwargs,
+    cfg: dict | None = None, scenarios: pd.DataFrame | None = None,
+    advisor_update_interval_min: int = 1, **advisor_kwargs,
 ) -> pd.DataFrame:
     """AnticipatorySetpointAdvisor vs ThermostatController -- "does smart
     control beat what real rail HVAC does today?" See the module docstring.
@@ -202,6 +209,8 @@ def compare(
     `ff_weight=...`, `max_shift_k=...` for M10 Phase 2's VAL-split tuning
     (`src/tune_advisor.py`). Empty by default, so every existing caller
     keeps getting the class's own shipped defaults, unchanged.
+    `advisor_update_interval_min` forwards to run_controller() -- see its
+    own docstring; default 1 leaves every existing caller unchanged.
     """
     cfg = cfg if cfg is not None else load_config()
     booster = _load_booster()
@@ -211,6 +220,7 @@ def compare(
         baseline_factory=_thermostat_factory,
         candidate_factory=lambda row: _anticipatory_factory(cfg, booster, row, **advisor_kwargs),
         baseline="thermo", candidate="antic",
+        advisor_update_interval_min=advisor_update_interval_min,
     )
 
 

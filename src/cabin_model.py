@@ -71,6 +71,14 @@ class CabinInputs:
     fan_on: bool = True
     """Supply fan state. Defaults on: a train in service ventilates continuously,
     whether or not cooling is called for."""
+    tint_level: float = 0.0
+    """M11: electrochromic/SPD window tint, 0.0 (clear -- today's fixed
+    `solar_heat_gain_coefficient`, unchanged) to 1.0 (fully darkened --
+    `solar_heat_gain_coefficient_tinted`, config/cabin_params.yaml).
+    Defaults to 0.0 so every existing caller that doesn't pass it (M1-M10's
+    data_generator.py/evaluate.py/tests) keeps computing solar gain exactly
+    as before -- same deliberate backward-compatible-default pattern as
+    `rh_out_pct` below."""
     rh_out_pct: float = 50.0
     """Outdoor relative humidity, for the moisture balance (see CabinState.w_air_g_kg).
     Defaults to a neutral mid-range value so every existing caller that doesn't pass
@@ -138,11 +146,22 @@ class CabinModel:
         self.ha = internal_coupling_ua(self.cfg)
 
         env = self.cfg["envelope"]
-        self.solar_aperture = (
-            self.cfg["geometry"]["glazing_area_m2"]
-            * env["solar_heat_gain_coefficient"]
-            * env["sunlit_glazing_fraction"]
+        self.glazing_aperture_m2 = (
+            self.cfg["geometry"]["glazing_area_m2"] * env["sunlit_glazing_fraction"]
         )
+        self.shgc_clear = env["solar_heat_gain_coefficient"]
+        """SHGC at tint_level=0.0 -- unchanged from pre-M11: [ASSUMPTION]
+        "Tinted/laminated rail glazing" (config/cabin_params.yaml), i.e. this
+        was already describing glass with SOME fixed tint, not clear glass.
+        M11 keeps that as the ceiling (tint_level=0 reproduces every
+        pre-M11 result exactly) and adds a lower value below it, rather than
+        redefining what 0.45 itself means."""
+        self.shgc_tinted = env["solar_heat_gain_coefficient_tinted"]
+        """SHGC at tint_level=1.0 (fully darkened). [ASSUMPTION] -- SPD/
+        electrochromic smart glass generally supports a substantial
+        transmission range when fully darkened; no vehicle-specific
+        datasheet sourced this number, same honesty standard as every other
+        [ASSUMPTION] in this file. See config/cabin_params.yaml's comment."""
 
         occ = self.cfg["occupancy"]
         self.pax_sensible_w = occ["sensible_heat_w_per_pax"]
@@ -308,7 +327,12 @@ class CabinModel:
         ua_door = self.door_ua if inputs.door_open else 0.0
         q_pax = inputs.n_pax * self.pax_sensible_w
         q_latent = inputs.n_pax * self.pax_latent_w
-        q_solar = inputs.ghi_w_m2 * self.solar_aperture
+        # M11: effective SHGC slides from the clear-glass ceiling toward the
+        # fully-tinted floor as tint_level -> 1.0. tint_level=0.0 (every
+        # pre-M11 caller's implicit default) reproduces shgc_clear exactly,
+        # i.e. today's q_solar formula, bit-for-bit.
+        effective_shgc = self.shgc_clear - inputs.tint_level * (self.shgc_clear - self.shgc_tinted)
+        q_solar = inputs.ghi_w_m2 * self.glazing_aperture_m2 * effective_shgc
         q_fan = self.supply_fan_w if inputs.fan_on else 0.0
 
         # Moisture balance (M9) -- deliberately simplified, see the note below

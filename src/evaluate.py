@@ -53,6 +53,8 @@ def run_controller(
     direction: str = "down",
     pattern: str = "semi_express",
     load_factor: float = 1.0,
+    advisor_update_interval_min: int = 1,
+    tint_controller: object | None = None,
 ) -> pd.DataFrame:
     """Drives one setpoint advisor through one real journey, minute by minute.
 
@@ -69,6 +71,32 @@ def run_controller(
     that turns a setpoint into watts. That symmetry is what lets M5/M6
     isolate the advisor's actual contribution instead of conflating it with
     a difference in dispatch law.
+
+    `advisor_update_interval_min` (M10 Phase 2 investigation, default 1 =
+    every prior behaviour, unchanged): the EFFECTIVE, PlantResponse-facing
+    setpoint only updates every N minutes, held fixed in between, rather
+    than chasing a fresh recommendation every single minute. `recommend_
+    setpoint()` is still CALLED every minute regardless -- skipping the call
+    itself would also skip advancing AnticipatorySetpointAdvisor's
+    LiveFeatureBuilder history (its lag/EWMA features are defined in
+    calendar minutes, not in "advisor decisions"), corrupting the features
+    on the minutes it IS consulted. Only which of those per-minute
+    recommendations actually reaches PlantResponse is throttled. Prompted by
+    a real, well-grounded question: does recomputing every minute just add
+    chatter a bang-bang receiver can't usefully react to before the next
+    change arrives -- the same reasoning that already set M8's 30 s
+    telemetry cadence (docs/serial_protocol.md §5: the actuator's own lag,
+    not the link's update rate, is the real bottleneck).
+
+    `tint_controller` (M11, default None = no tinting, tint_level always
+    0.0 -- bit-for-bit today's pre-M11 behaviour): an object matching
+    ReactiveTintController/AnticipatoryTintAdvisor's
+    `.recommend_tint(ControllerInputs) -> float` interface
+    (src/tint_controller.py). Unlike `controller_factory`, this is a ready
+    instance, not a factory -- neither tint controller has per-scenario
+    state to construct fresh (no LiveFeatureBuilder-equivalent), so there's
+    nothing a factory would buy here. Consulted every minute using the SAME
+    ControllerInputs already built for the HVAC advisor.
     """
     cfg = cfg if cfg is not None else load_config()
     horizon = cfg["simulation"]["control_horizon_min"]
@@ -76,6 +104,29 @@ def run_controller(
     wx = pd.read_csv(DATA_DIR / f"weather_{city}_summer.csv", parse_dates=["timestamp"])
     service = Service(direction=direction, pattern=pattern, load_factor=load_factor)
     profile = simulate(service, cfg)
+    # M11: tunnels (or any other sun-blocking route feature -- see
+    # config/cabin_params.yaml's tunnel_zones_min) mask GHI to ~0 for both
+    # the current minute and the forecast horizon, so a tunnel shows up to
+    # every consumer of ghi_w_m2/ghi_fcst_h (the HVAC advisor, the tint
+    # controllers) as "no sun," with no separate in_tunnel field needed
+    # anywhere downstream -- see src/tint_controller.py's module docstring.
+    #
+    # ONLY APPLIED WHEN tint_controller IS PROVIDED, deliberately -- the
+    # `in_tunnel` column itself is still always computed/reported (harmless,
+    # useful for inspection), but M2 already decided tunnel effects were out
+    # of scope for the core cabin model ("add fidelity that no reviewer will
+    # check, and cost hours" -- ROADMAP.md's M2 section). M11 reintroduces
+    # them narrowly, for the specific demo they're the point of, not as a
+    # silent universal physics change that would shift M5/M6/M10's
+    # already-verified numbers for scenarios that were never about tinting.
+    # Confirmed this distinction matters, not assumed: an earlier version
+    # applied the mask unconditionally and flipped one M10 TEST-split
+    # scenario from "not worse on both" to "worse on both" purely from two
+    # tunnel zones neither the HVAC advisor nor PlantResponse has anything
+    # to do with -- caught by tests/test_compare_controllers.py going red,
+    # not by inspection.
+    in_tunnel_raw = profile.in_tunnel if profile.in_tunnel else [False] * len(profile)
+    in_tunnel = in_tunnel_raw if tint_controller is not None else [False] * len(profile)
     # round(), not int() -- data_generator.py rounds depart_hour to the nearest
     # minute when starting a scenario; truncating here instead would silently
     # start this replay up to a minute earlier than the scenario it's meant to
@@ -89,22 +140,33 @@ def run_controller(
     plant = PlantResponse(model)  # one shared instance per run -- see docstring
     state = model.initial_state(model.setpoint(float(w["t_out_c"].iloc[0])))
 
+    effective_setpoint_c = None  # holds the last-applied recommendation between updates
     rows = []
     for t in range(len(profile)):
+        fcst_t = t + horizon
+        ghi_now = 0.0 if in_tunnel[t] else float(w["ghi_w_m2"].iloc[t])
+        ghi_fcst = 0.0 if (fcst_t < len(in_tunnel) and in_tunnel[fcst_t]) else float(w["ghi_w_m2"].iloc[fcst_t])
         inputs = ControllerInputs(
             t_air_c=state.t_air_c, t_mass_c=state.t_mass_c, t_out_c=float(w["t_out_c"].iloc[t]),
-            ghi_w_m2=float(w["ghi_w_m2"].iloc[t]), n_pax=profile.n_pax[t],
+            ghi_w_m2=ghi_now, n_pax=profile.n_pax[t],
             door_open=profile.door_open[t], q_hvac_actual_w=state.q_hvac_actual_w,
             time_to_next_station_min=profile.time_to_next_station_min[t],
             expected_boarding=profile.expected_boarding[t],
-            t_out_fcst_h=float(w["t_out_c"].iloc[t + horizon]),
-            ghi_fcst_h=float(w["ghi_w_m2"].iloc[t + horizon]),
+            t_out_fcst_h=float(w["t_out_c"].iloc[fcst_t]),
+            ghi_fcst_h=ghi_fcst,
         )
-        advised_setpoint_c = advisor.recommend_setpoint(inputs)
+        # Called every minute regardless of the update interval -- see
+        # advisor_update_interval_min's docstring on why the CALL and the
+        # APPLICATION are deliberately decoupled.
+        recommended = advisor.recommend_setpoint(inputs)
+        if effective_setpoint_c is None or t % advisor_update_interval_min == 0:
+            effective_setpoint_c = recommended
+        advised_setpoint_c = effective_setpoint_c
         cmd = plant.respond(inputs.t_air_c, advised_setpoint_c)
+        tint_level = tint_controller.recommend_tint(inputs) if tint_controller is not None else 0.0
         r = model.step(state, CabinInputs(
             t_out_c=inputs.t_out_c, ghi_w_m2=inputs.ghi_w_m2, n_pax=inputs.n_pax,
-            door_open=inputs.door_open, q_hvac_cmd_w=cmd,
+            door_open=inputs.door_open, q_hvac_cmd_w=cmd, tint_level=tint_level,
             rh_out_pct=float(w["rh_out_pct"].iloc[t]),
         ), dt_s=60.0)
         # setpoint stays the fixed EN13129 scoring reference used to judge
@@ -117,7 +179,8 @@ def run_controller(
             "t": t, "t_air_c": r.t_air_c, "t_mass_c": r.t_mass_c, "setpoint_c": setpoint,
             "advised_setpoint_c": advised_setpoint_c,
             "err_c": r.t_air_c - setpoint, "n_pax": profile.n_pax[t],
-            "door_open": profile.door_open[t],
+            "door_open": profile.door_open[t], "in_tunnel": in_tunnel[t],
+            "tint_level": tint_level, "q_solar_w": r.q_solar_w,
             # cmd_w is now a SIMULATED PlantResponse output, not "Railflow's
             # decision" -- kept under its old name/units since score() and
             # every existing consumer still key off it unchanged.
