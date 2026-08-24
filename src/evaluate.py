@@ -24,7 +24,7 @@ import pandas as pd
 
 from src.cabin_model import CabinInputs, CabinModel
 from src.config import DATA_DIR, load_config
-from src.controllers import ControllerInputs
+from src.controllers import ControllerInputs, PlantResponse
 from src.occupancy import Service, simulate
 from src.weather import to_minutes
 
@@ -54,13 +54,21 @@ def run_controller(
     pattern: str = "semi_express",
     load_factor: float = 1.0,
 ) -> pd.DataFrame:
-    """Drives one controller through one real journey, minute by minute.
+    """Drives one setpoint advisor through one real journey, minute by minute.
 
-    `controller_factory(model)` builds the controller against a freshly
-    constructed CabinModel, so ThermostatController and AnticipatoryController
-    (or anything matching their `.command(ControllerInputs) -> float`
-    interface) can be driven identically without src/evaluate.py needing to
-    know which one it's holding.
+    `controller_factory(model)` builds the advisor against a freshly
+    constructed CabinModel, so ThermostatController and
+    AnticipatorySetpointAdvisor (or anything matching their
+    `.recommend_setpoint(ControllerInputs) -> float` interface, a setpoint in
+    degrees C) can be driven identically without this function needing to
+    know which one it's holding. A single PlantResponse -- the stand-in for
+    the real, third-party Control Unit this project never touches or
+    redesigns (see src/controllers.py's M10 reframing note) -- is constructed
+    once per run and shared by every advisor, so the ONLY thing that differs
+    between arms is the setpoint each one recommends, never the mechanism
+    that turns a setpoint into watts. That symmetry is what lets M5/M6
+    isolate the advisor's actual contribution instead of conflating it with
+    a difference in dispatch law.
     """
     cfg = cfg if cfg is not None else load_config()
     horizon = cfg["simulation"]["control_horizon_min"]
@@ -77,7 +85,8 @@ def run_controller(
     w = to_minutes(wx, start, len(profile) + horizon)
 
     model = CabinModel(cfg)
-    controller = controller_factory(model)
+    advisor = controller_factory(model)
+    plant = PlantResponse(model)  # one shared instance per run -- see docstring
     state = model.initial_state(model.setpoint(float(w["t_out_c"].iloc[0])))
 
     rows = []
@@ -91,17 +100,28 @@ def run_controller(
             t_out_fcst_h=float(w["t_out_c"].iloc[t + horizon]),
             ghi_fcst_h=float(w["ghi_w_m2"].iloc[t + horizon]),
         )
-        cmd = controller.command(inputs)
+        advised_setpoint_c = advisor.recommend_setpoint(inputs)
+        cmd = plant.respond(inputs.t_air_c, advised_setpoint_c)
         r = model.step(state, CabinInputs(
             t_out_c=inputs.t_out_c, ghi_w_m2=inputs.ghi_w_m2, n_pax=inputs.n_pax,
             door_open=inputs.door_open, q_hvac_cmd_w=cmd,
             rh_out_pct=float(w["rh_out_pct"].iloc[t]),
         ), dt_s=60.0)
+        # setpoint stays the fixed EN13129 scoring reference used to judge
+        # EVERY arm identically (comfort metric, degree_hours) -- this is
+        # unrelated to advised_setpoint_c, which is the new, genuinely
+        # per-arm quantity (what THIS advisor recommended this minute).
+        # Easy to conflate the two; they answer different questions.
         setpoint = model.setpoint(inputs.t_out_c)
         rows.append({
             "t": t, "t_air_c": r.t_air_c, "t_mass_c": r.t_mass_c, "setpoint_c": setpoint,
+            "advised_setpoint_c": advised_setpoint_c,
             "err_c": r.t_air_c - setpoint, "n_pax": profile.n_pax[t],
-            "door_open": profile.door_open[t], "cmd_w": cmd, "q_actual_w": r.q_hvac_actual_w,
+            "door_open": profile.door_open[t],
+            # cmd_w is now a SIMULATED PlantResponse output, not "Railflow's
+            # decision" -- kept under its old name/units since score() and
+            # every existing consumer still key off it unchanged.
+            "cmd_w": cmd, "q_actual_w": r.q_hvac_actual_w,
             "electrical_w": r.electrical_w,
             "w_air_g_kg": r.w_air_g_kg, "rh_air_pct": r.rh_air_pct,
             # w_air_g_kg is identical for every controller run on the same

@@ -6,9 +6,9 @@ to be the energy-saving curve alone: ThermostatController and the
 proportional-only ablation both swing wildly in comfort across the sweep
 (non-monotonically -- a lagged actuator can damp bang-bang's overshoot at
 first, then just become too slow to track a disturbance), while
-AnticipatoryController stays comparatively stable. That robustness-to-the-
-unknown-parameter claim needs the comfort panel to be visible at all; the
-energy panel alone would hide it.
+AnticipatorySetpointAdvisor stays comparatively stable. That robustness-to-
+the-unknown-parameter claim needs the comfort panel to be visible at all;
+the energy panel alone would hide it.
 """
 
 import pandas as pd
@@ -43,7 +43,7 @@ def plot(df: pd.DataFrame | None = None, out_path=PLOT_PATH):
     ax2.plot(df["tau_act_min"], df["ff_total_baseline_dh"], "^-",
               label="Proportional-only (no forecast)", color="#ff7f0e")
     ax2.plot(df["tau_act_min"], df["onoff_total_candidate_dh"], "D-",
-              label="AnticipatoryController (shipped)", color="#2ca02c")
+              label="AnticipatorySetpointAdvisor (shipped)", color="#2ca02c")
     ax2.set_xlabel("tau_act (actuator lag, min) -- UNKNOWN, swept not asserted")
     ax2.set_ylabel("total degree-hours outside band, K*h\n(23 test-split scenarios, lower = better)")
     ax2.set_title("Comfort robustness to the unknown lag")

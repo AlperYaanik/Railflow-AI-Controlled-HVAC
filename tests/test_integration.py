@@ -446,7 +446,7 @@ def test_both_m5_controllers_produce_genuinely_different_trajectories(cfg, requi
     accidentally produce identical (or near-identical) trajectories -- which
     would mean one of them isn't actually doing what it claims to.
     """
-    from src.controllers import AnticipatoryController, ThermostatController
+    from src.controllers import AnticipatorySetpointAdvisor, ThermostatController
     from src.evaluate import run_controller
     from src.features import LiveFeatureBuilder
     from src.train import MODEL_PATH
@@ -460,7 +460,7 @@ def test_both_m5_controllers_produce_genuinely_different_trajectories(cfg, requi
     def anticipatory_factory(model):
         builder = LiveFeatureBuilder(cfg, city="cairo", direction="down",
                                       pattern="semi_express", load_factor=1.0, depart_hour=8.0)
-        return AnticipatoryController(model, booster, builder)
+        return AnticipatorySetpointAdvisor(model, booster, builder)
 
     thermostat_traj = run_controller(lambda m: ThermostatController(m), cfg)
     anticipatory_traj = run_controller(anticipatory_factory, cfg)
@@ -481,7 +481,7 @@ def test_m5_comparison_produces_physically_sane_results(cfg, require_weather):
     (something would be badly wrong) or a negative/zero difference across
     every scenario (then there is no result to report).
     """
-    from src.controllers import AnticipatoryController, ThermostatController
+    from src.controllers import AnticipatorySetpointAdvisor, ThermostatController
     from src.evaluate import run_controller, score
     from src.features import LiveFeatureBuilder
     from src.train import MODEL_PATH
@@ -495,7 +495,7 @@ def test_m5_comparison_produces_physically_sane_results(cfg, require_weather):
     def anticipatory_factory(model):
         builder = LiveFeatureBuilder(cfg, city="cairo", direction="down",
                                       pattern="semi_express", load_factor=1.0, depart_hour=8.0)
-        return AnticipatoryController(model, booster, builder)
+        return AnticipatorySetpointAdvisor(model, booster, builder)
 
     thermostat_score = score(run_controller(lambda m: ThermostatController(m), cfg), cfg)
     anticipatory_score = score(run_controller(anticipatory_factory, cfg), cfg)

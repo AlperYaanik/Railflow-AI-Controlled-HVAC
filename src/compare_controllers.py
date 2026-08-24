@@ -10,14 +10,17 @@ duplicated-logic drift this project has already been bitten by twice (see
 evaluate.py's and features.py's module docstrings on why run_controller/
 LiveFeatureBuilder are shared code for the same reason).
 
-  compare() -- AnticipatoryController vs ThermostatController. "Does smart
-  control beat what real rail HVAC does today?" ThermostatController is an
-  honest baseline (on/off with a sourced 1.5-2 K hysteresis band, not an
+  compare() -- AnticipatorySetpointAdvisor vs ThermostatController. "Does
+  smart advice beat what real rail HVAC does today?" Both are evaluated
+  through the SAME PlantResponse (src/controllers.py), so this isolates the
+  advisor's setpoint choice, not a difference in dispatch mechanism -- see
+  the M10 note in src/controllers.py. ThermostatController is an honest
+  baseline (on/off with a sourced 1.5-2 K hysteresis band, not an
   unrealistically narrow strawman -- see docs/PARAMETERS.md). This is the
   deployment-relevant number.
 
-  compare_feedforward_contribution() -- the shipped AnticipatoryController
-  (ff_weight=0.6) vs the SAME controller/deadband forced to ff_weight=0.0
+  compare_feedforward_contribution() -- the shipped AnticipatorySetpointAdvisor
+  (ff_weight=0.45) vs the SAME advisor/deadband forced to ff_weight=0.0
   (pure proportional feedback, no ML forecast at all). "Does M4's forecaster
   earn its keep on top of simple feedback?" An ablation, not a deployment
   baseline. NOT a real PID -- no integral or derivative term -- and must
@@ -53,7 +56,7 @@ from typing import Callable
 import pandas as pd
 
 from src.config import DATA_DIR, load_config
-from src.controllers import AnticipatoryController, ThermostatController
+from src.controllers import AnticipatorySetpointAdvisor, ThermostatController
 from src.evaluate import run_controller, score
 from src.features import LiveFeatureBuilder
 from src.train import MODEL_PATH, chronological_split
@@ -105,15 +108,15 @@ def _anticipatory_factory(cfg, booster, row, **kwargs):
     LiveFeatureBuilder's single-row categories, but that guarantee is
     worthless if the row itself claims the wrong city).
 
-    `**kwargs` forwards to AnticipatoryController -- e.g. ff_weight=0.0 for
-    compare_feedforward_contribution()'s pure-proportional baseline.
+    `**kwargs` forwards to AnticipatorySetpointAdvisor -- e.g. ff_weight=0.0
+    for compare_feedforward_contribution()'s pure-proportional baseline.
     """
     def factory(model):
         builder = LiveFeatureBuilder(
             cfg, city=row.city, direction=row.direction, pattern=row.pattern,
             load_factor=row.load_factor, depart_hour=row.depart_hour,
         )
-        return AnticipatoryController(model, booster, builder, **kwargs)
+        return AnticipatorySetpointAdvisor(model, booster, builder, **kwargs)
     return factory
 
 

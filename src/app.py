@@ -1,6 +1,6 @@
 """M7: live demo, Streamlit. Runs the SAME simulator M4-M6 were built and
 tested on -- no separate demo path. `run_controller()` (src/evaluate.py),
-`ThermostatController`/`AnticipatoryController` (src/controllers.py) are
+`ThermostatController`/`AnticipatorySetpointAdvisor` (src/controllers.py) are
 used exactly as src/compare_controllers.py uses them, so this app's numbers
 must match that script's for the same scenario. If they ever don't, that's
 a bug in this file, not a new result.
@@ -35,7 +35,7 @@ import streamlit as st
 
 from src.compare_controllers import held_out_test_scenarios
 from src.config import load_config
-from src.controllers import AnticipatoryController, ThermostatController
+from src.controllers import AnticipatorySetpointAdvisor, ThermostatController
 from src.evaluate import run_controller, score
 from src.features import LiveFeatureBuilder
 from src.train import MODEL_PATH
@@ -71,7 +71,7 @@ def run_both(city, date, depart_hour, direction, pattern, load_factor):
     def antic_factory(model):
         builder = LiveFeatureBuilder(cfg, city=city, direction=direction, pattern=pattern,
                                       load_factor=load_factor, depart_hour=depart_hour)
-        return AnticipatoryController(model, booster, builder)
+        return AnticipatorySetpointAdvisor(model, booster, builder)
 
     antic_traj = run_controller(antic_factory, **run_kwargs)
     return thermo_traj, antic_traj, score(thermo_traj, cfg), score(antic_traj, cfg)
@@ -161,9 +161,18 @@ def render(up_to: int):
     ax_temp.legend(loc="upper right", fontsize=8)
     ax_temp.grid(alpha=0.3)
 
-    ax_cmd.plot(t["t"], t["cmd_w"] / 1000.0, color="#d62728", linewidth=1.2, label="on/off")
-    ax_cmd.plot(a["t"], a["cmd_w"] / 1000.0, color="#2ca02c", linewidth=1.2, label="anticipatory")
-    ax_cmd.set_ylabel("HVAC command (kW)\n(+heat / −cool)")
+    # M10: this panel used to plot cmd_w (a watts command) -- Railflow no
+    # longer commands power (would require touching the real HVAC unit's
+    # control electronics; see src/controllers.py's M10 note). It now shows
+    # advised_setpoint_c, the recommendation each advisor actually produces.
+    # ThermostatController's line here exactly overlays the dashed setpoint
+    # reference in the panel above -- an honest visual: the baseline's own
+    # advice IS the static schedule, nothing more.
+    ax_cmd.plot(t["t"], t["advised_setpoint_c"], color="#d62728", linewidth=1.2,
+                label="on/off (static schedule)")
+    ax_cmd.plot(a["t"], a["advised_setpoint_c"], color="#2ca02c", linewidth=1.2,
+                label="anticipatory (AI-recommended)")
+    ax_cmd.set_ylabel("recommended cabin setpoint (°C)")
     ax_cmd.legend(loc="upper right", fontsize=8)
     ax_cmd.grid(alpha=0.3)
 

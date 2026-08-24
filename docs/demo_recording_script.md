@@ -12,6 +12,12 @@ original version of this script only described two panels (temperature,
 HVAC command) -- found stale during a full-system verification pass, fixed
 before anyone tried to record against it.
 
+**Updated again after M10 reframed the middle panel.** Railflow's compute
+cannot touch a real HVAC unit's control electronics (would void the
+manufacturer's warranty), so the system no longer commands power -- it
+recommends a cabin setpoint. The middle panel now plots that recommendation
+(°C), not a watts command; the narration line below was rewritten to match.
+
 **Why a script and not an already-recorded file.** No tool available in this
 environment can capture the presenter's own screen: the Chrome extension
 that could drive a real browser recording wasn't connected here, this
@@ -78,8 +84,10 @@ Drag the **Minute** slider partway, then toggle **Auto-play from here** and
 let it run a few seconds.
 > "The chart isn't a static image -- it's the full minute-by-minute
 > trajectory. Red is on/off, green is anticipatory, the shaded band in the
-> top panel is the comfort tolerance. The middle panel is the actual HVAC
-> command each controller sent."
+> top panel is the comfort tolerance. The middle panel is the cabin
+> setpoint each controller recommended -- not a power command. A separate,
+> unmodified on/off unit, simulated identically for both controllers, is
+> what actually turns that recommendation into on/off cycling."
 
 **1:05-1:25 -- The humidity panel.**
 Point at the bottom panel while it's still auto-playing or after it stops.

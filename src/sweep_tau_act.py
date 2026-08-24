@@ -24,8 +24,8 @@ value turns out to come substantially from anticipating KNOWN FUTURE
 DISTURBANCES (expected_boarding, time_to_next_station_min, the weather
 forecast) that exist independently of actuator dynamics, which the original
 hypothesis didn't account for. Full writeup, and the more useful finding
-this sweep actually produced (AnticipatoryController's comfort is far less
-sensitive to the unknown tau_act than either baseline), in ROADMAP.md's M6
+this sweep actually produced (AnticipatorySetpointAdvisor's comfort is far
+less sensitive to the unknown tau_act than either baseline), in ROADMAP.md's M6
 section -- read that before drawing conclusions from a re-run of this
 module, not just this docstring.
 
