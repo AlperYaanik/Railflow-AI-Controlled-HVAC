@@ -473,7 +473,30 @@ baseline cooling-only, matching every other baseline already built in this
 project. `thermostat_hysteresis_k` itself was not wrong; running it dual-mode
 on this specific plant was.
 
+**M10 note.** This mechanism now has its own name and class, `PlantResponse`
+(`src/controllers.py`) — the hysteresis logic described above, unchanged, but
+extracted so every compared advisor reacts through the identical mechanism
+rather than each baseline reimplementing its own. Sourcing and the dual-mode
+finding above are unaffected; `thermostat_hysteresis_k` means exactly what it
+meant before.
+
 ### Anticipatory controller blend (M5)
+
+**M10 status: this entire section describes the retired watts-dispatch
+law — superseded, kept for the record, pending Phase-2 regeneration.**
+`gain_k` (below) no longer exists in the code: `AnticipatoryController` was
+renamed `AnticipatorySetpointAdvisor` and its dispatch tail rewritten to
+recommend a setpoint shift (°C) instead of a capacity fraction (W), so
+Railflow's compute never has to touch a real HVAC unit's control
+electronics (see ROADMAP.md's M10 section). Its replacement, `max_shift_k`,
+is a **different physical quantity** — a setpoint-authority bound in
+degrees C, not a capacity-fraction gain — currently a fresh, untuned
+`[ASSUMPTION]` placeholder, not derived from `gain_k` by any principled
+conversion. `ff_weight` survives structurally (the feedforward/feedback
+blend itself is unchanged) but still needs re-tuning jointly with
+`max_shift_k`, since the law downstream of the blend changed. Everything
+below describes what was true of the retired law; kept visible rather than
+deleted, same as every other superseded number in this document.
 
 `ff_weight = 0.45` (M9, down from the original `0.6`), `gain_k = 3.0` — the
 feedforward (M4 forecast) / feedback (current error) blend ratio and control
@@ -785,6 +808,18 @@ dependence instead of a point value. The `tau_act = 0` endpoint doubles as a
 correctness check: the predictive controller must degenerate to the baseline
 there, and `test_zero_tau_act_removes_the_lag` enforces the model side of it.
 
+**M10 reinterpretation.** These parameters still describe exactly the same
+actuator physics (`CabinModel._actuate()`'s dead-time queue and first-order
+lag, unchanged code) — what changed is whose actuator they describe. Before
+M10, this was Railflow's own commanded actuator's lag. Since M10, Railflow
+recommends a setpoint and a simulated `PlantResponse` reacts to it, standing
+in for the real, third-party receiving unit's own onboard controller — so
+`dead_time_min`/`tau_act_min` now represent *that* unit's unknown response
+characteristics, something Railflow was never going to be able to measure or
+control in the first place. Still genuinely unknown, still swept rather than
+asserted, arguably a more honest framing of what was already an
+[ASSUMPTION] than the pre-M10 one.
+
 ---
 
 ## Comfort
@@ -808,6 +843,17 @@ such.
 
 `band_k = 2.0` (±2 K) defines the comfort metric — degree-minutes outside the
 band — and is the yardstick the boarding disturbance is measured against.
+
+**M10: this is now literally the output, not just an internal target.**
+Before M10, `setpoint_c` (and the sliding ramp it comes from) was consumed
+only as a reference every controller's error term was computed against —
+never itself transmitted or presented as a deliverable. Since M10, a cabin
+setpoint IS Railflow's deliverable: `AnticipatorySetpointAdvisor` recommends
+an adjusted version of this same sliding-schedule value, `docs/serial_protocol.md`
+sends it as the primary UART field, and `src/app.py`'s demo plots it directly
+instead of a watts command. No new sourcing was needed for this promotion —
+the EN 13129 sliding-setpoint concept and its confidence rating above already
+describe exactly the quantity now being recommended.
 
 ---
 
@@ -1206,3 +1252,5 @@ more than the final numbers.
 | Forecaster shipped with `num_leaves=31`, `learning_rate=0.05` untuned | Never benchmarked against alternatives or its own hyperparameter space — M9 built `src/benchmark_models.py` specifically to check | Val-selected 9-point grid found `num_leaves=15`, `learning_rate=0.02` beats it by a real, free 0.047 °C test MAE with zero interface change; adopted. Also benchmarked against linear regression, random forest, XGBoost, CatBoost on the same split — all six landed within a 1.6% relative MAE band, the real finding being that model family barely matters once the feature engineering is doing its job |
 | `ff_weight=0.6` never re-examined after M9's model retune | The forecaster's predictions changed (new hyperparameters above), so a blend ratio tuned against the *old* model's output characteristics had no guarantee of still being best | Re-ran the same 25-point `(gain_k, ff_weight)` val-split grid against the retrained model; `(gain_k=3.0, ff_weight=0.45)` won independently both times, confirmed once on test (mean energy saving +1.2%→+3.9%, both-better 13/23→19/23, comfort-ok unchanged 21/23, zero worse-on-both throughout — a strict improvement). Adopted; M5/M6 regenerated against both changes together, not left stale. Full numbers in ROADMAP.md's M5/M6 sections |
 | Forecaster systematically under-predicts extreme heat (SHAP-driven diagnosis, M9) | Mean residual −1.43 °C on test, concentrated in the hottest 52% of rows — the same documented failure mode as AI weather models (GraphCast/Pangu-Weather) underestimating record temperatures, since average-loss-minimizing tree models pull rare extremes toward their leaf's bulk | Tested two literature-grounded remedies (L2 objective + `monotone_constraints` on `t_out_c`/`t_out_fcst_h`; an explicit HVAC-saturation feature). An exploratory TEST-split comparison showed L2+monotonic winning clearly — but redone properly with a VAL-selected grid (this project's standing discipline), **the shipped L1 config won VAL outright**. The earlier result was the model fitting TEST's specific weather window, not a real improvement — caught before shipping it. **Not adopted; model unchanged.** The saturation feature was tested separately and made things marginally worse (redundant with the already-present `setpoint_c`). Limitation disclosed, not fixed — see ROADMAP.md's M9 §4b |
+
+**M10 — not a row in the table above, deliberately.** Every row above records something that was *wrong* and got fixed. The M10 output reframing (`AnticipatoryController` → `AnticipatorySetpointAdvisor`, `gain_k` → `max_shift_k`, watts → a setpoint recommendation) isn't that: nothing above it was incorrect, it's a scope decision forced by an external constraint (the real HVAC unit's control electronics cannot be touched — see ROADMAP.md's M10 section). Noted here as a pointer instead, so a reader scanning this log for "what changed and why" doesn't come up empty: the "Thermostat hysteresis (M5)", "Anticipatory controller blend (M5)", "Actuator lag", and "Comfort" sections above each carry their own M10 note; the full rationale and file-by-file change list is in ROADMAP.md's M10 section.

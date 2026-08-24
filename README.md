@@ -36,12 +36,15 @@ Tests and scripts that need weather/data/model skip with an actionable message
 python -m pytest tests/ -q
 ```
 
-272 tests. Physics (free-float convergence, derived time constants, actuator
-behaviour, numerical convergence, the M9 humidity moisture balance
-including its saturation cap), timetable/occupancy invariants, feature
-engineering (leakage checks, batch/live equivalence), the forecaster
-(chronological split, beats persistence), the two controllers (regression
-guards for two real bugs found during development — see `docs/PARAMETERS.md`),
+273 tests — 270 passing, 3 `xfail` (the M5/M6 directional comparisons,
+pinned to numbers the M10 output reframing retired — see `ROADMAP.md`'s M10
+section; not silently red or deleted). Physics (free-float convergence,
+derived time constants, actuator behaviour, numerical convergence, the M9
+humidity moisture balance including its saturation cap), timetable/occupancy
+invariants, feature engineering (leakage checks, batch/live equivalence),
+the forecaster (chronological split, beats persistence), the setpoint
+advisors and shared plant response (regression guards for two real bugs
+found during development — see `docs/PARAMETERS.md`),
 the M5 comparison harness, the M6 actuator-lag sweep, the M7 Streamlit
 demo (headless `AppTest`, including that a missing model/dataset/weather
 file each produce a clean actionable error rather than a crash), the M8 serial
@@ -58,7 +61,7 @@ LightGBM/SHAP categorical-feature incompatibility class).
 python -m src.config             # every derived physical quantity (UA, C, both time constants)
 python -m src.occupancy          # service catalogue, station-by-station passenger profile
 python -m src.train               # retrains, reports test MAE vs the persistence baseline
-python -m src.compare_controllers # the M5 headline: AnticipatoryController vs on/off, and a
+python -m src.compare_controllers # the M5 headline: AnticipatorySetpointAdvisor vs on/off, and a
                                    # feedforward-contribution ablation, on the held-out test split
 python -m src.sweep_tau_act       # M6: re-runs both comparisons across a range of actuator lag
 python -m src.plot_tau_act_sweep  # produces data/m6_tau_act_sweep.png from the sweep above
@@ -88,14 +91,18 @@ walkthrough of what's on screen (not written for developers), see
 `docs/USER_MANUAL.md`. If the live demo can't be shown on presentation day,
 `docs/demo_recording_script.md` is the fallback recording script.
 
-## Hardware handover (M8)
+## Hardware handover (M8, reframed by M10)
 
-This project's own compute never touches the actuator directly — it sends
-one outbound command over UART. The frame format, every field's units and
-range, and exactly what the board side must do with it (including link-loss
-behaviour) is fully specified in `docs/serial_protocol.md`, written so the
-board can be implemented from that document alone. `src/serial_bridge.py`
-is the reference sender:
+This project's own compute never touches a real HVAC unit's control
+electronics — doing so would void the manufacturer's warranty, so it isn't
+an implementation choice this project could make differently. Instead it
+sends one outbound *recommendation* over UART: a target cabin setpoint
+(°C) — the same kind of input a passenger or technician could enter on the
+unit's own thermostat, never a direct power/compressor command. The frame
+format, every field's units and range, and exactly what the board side must
+do with it (including link-loss behaviour) is fully specified in
+`docs/serial_protocol.md`, written so the board can be implemented from that
+document alone. `src/serial_bridge.py` is the reference sender:
 
 ```bash
 python -m src.serial_bridge   # sends one frame over pyserial's built-in
@@ -118,7 +125,7 @@ to actual hardware; nothing else about the call changes.
 | `src/data_generator.py` | Generates the training dataset by simulating many journeys |
 | `src/features.py` | Feature engineering — batch (`add_features`) and live (`LiveFeatureBuilder`), kept provably identical |
 | `src/train.py` | Trains the LightGBM forecaster (T_air 30 min ahead), chronological split |
-| `src/controllers.py` | `ThermostatController` (on/off baseline) and `AnticipatoryController` (forecast-driven) |
+| `src/controllers.py` | `PlantResponse` (shared plant reaction), `ThermostatController` (static-schedule advisor) and `AnticipatorySetpointAdvisor` (forecast-driven advisor) |
 | `src/evaluate.py` | Drives a controller through a real scenario minute by minute; scores energy + comfort |
 | `src/compare_controllers.py` | The M5 comparison harness — on/off headline and a feedforward-contribution ablation |
 | `src/sweep_tau_act.py`, `src/plot_tau_act_sweep.py` | M6 — sweeps the unknown actuator lag rather than asserting a value |
@@ -189,21 +196,39 @@ AC is cooling; a saturation cap added after a real test caught %RH exceeding
 against linear regression, random forest, XGBoost, and CatBoost on the same
 chronological split — model family barely matters here (all within a 1.6%
 MAE band) — and the tuned LightGBM hyperparameters it found are adopted into
-the shipped model, with `AnticipatoryController`'s `ff_weight` re-tuned
+the shipped model, with the anticipatory advisor's `ff_weight` re-tuned
 against the retrained model and M5/M6 regenerated to match (see ROADMAP.md's
-M5 section for the current headline number). `src/shap_analysis.py` adds
-SHAP feature attribution on top — verified correct against LightGBM's
-categorical features (not just non-crashing), confirming the forecaster
-leans on forecast/trend signal rather than current state alone. A follow-up
-diagnostic pass (bias/variance, residuals, slice-based errors, a learning
-curve) found the forecaster systematically under-predicts extreme heat —
-the same documented failure mode as AI weather models underestimating
-record temperatures — and tested two literature-grounded remedies
-(monotonic constraints, an explicit saturation feature); neither held up
-under this project's own val-then-test-once discipline, so **neither was
-adopted** — a disclosed, known limitation rather than a papered-over one
-(see ROADMAP.md's M9 §4b). Still open: the physical prototype rescale,
+M5 section for the pre-M10 headline number, now marked superseded — see
+below). `src/shap_analysis.py` adds SHAP feature attribution on top —
+verified correct against LightGBM's categorical features (not just
+non-crashing), confirming the forecaster leans on forecast/trend signal
+rather than current state alone. A follow-up diagnostic pass (bias/variance,
+residuals, slice-based errors, a learning curve) found the forecaster
+systematically under-predicts extreme heat — the same documented failure
+mode as AI weather models underestimating record temperatures — and tested
+two literature-grounded remedies (monotonic constraints, an explicit
+saturation feature); neither held up under this project's own
+val-then-test-once discipline, so **neither was adopted** — a disclosed,
+known limitation rather than a papered-over one (see ROADMAP.md's M9 §4b).
+Still open: the physical prototype, its own separately-scoped effort,
 blocked on real hardware measurements.
+
+**M10 Phase 1 complete.** The team was told the real HVAC unit's control
+electronics cannot be touched or modified without voiding the manufacturer's
+warranty, so the system's output was reframed: it now recommends a cabin
+setpoint (°C) instead of commanding power. `ThermostatController` turned out
+to already be, structurally, "setpoint → hysteresis → watts" — splitting
+that mechanism into its own `PlantResponse` class gave a stand-in for the
+real Control Unit this project never touches, and let `AnticipatoryController`
+(renamed `AnticipatorySetpointAdvisor`) reuse the exact same forecast+blend
+machinery while its final step changed from a watts dispatch to a setpoint
+recommendation. Verified with the full test suite (270 passed, 3 xfailed —
+exactly the directional M5/M6 comparisons pinned to the retired law's
+numbers, marked `xfail` rather than silently red) and the pinned
+`ThermostatController` regression staying byte-identical, confirming the
+split changed nothing about the baseline's actual behaviour. Regenerating
+M5/M6/M9's headline numbers under the new architecture is explicit,
+deliberately deferred **Phase 2** work — see ROADMAP.md's M10 section.
 
 ## License
 

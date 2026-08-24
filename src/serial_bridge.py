@@ -43,9 +43,14 @@ def encode_frame(
     documented range (docs/serial_protocol.md §4) -- this is an outbound
     boundary to real hardware, so an out-of-range value here is a bug worth
     failing loudly on, not silently clipping into range and sending anyway.
-    In normal operation this should never trigger: q_cmd in particular is
-    already clipped to [-1, 1] inside AnticipatoryController.command()
-    (src/controllers.py) before it ever reaches this function.
+
+    M10: `setpoint_c` is the primary field -- the decision this protocol
+    exists to deliver (see docs/serial_protocol.md §4.1), sourced from
+    AnticipatorySetpointAdvisor.recommend_setpoint() (src/controllers.py),
+    already clipped to SETPOINT_RANGE_C before it ever reaches this
+    function. `q_cmd` is now an optional, simulation-only diagnostic --
+    not a value the board should act on -- kept in the frame for telemetry/
+    debugging, not because a real receiver needs it to decide anything.
     """
     def _check(name: str, value: float, lo: float, hi: float) -> None:
         if not (lo <= value <= hi):

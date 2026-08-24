@@ -7,11 +7,19 @@ do I type, and what am I looking at.
 
 ## What this project is
 
-Railflow predicts a train cabin's temperature a few minutes ahead and turns
-the HVAC on/off earlier than a normal thermostat would. The demo shows two
-controllers running side by side on the same simulated train journey: the
-old way (a simple on/off thermostat) and the new way (the anticipatory
-controller). You compare their energy use and comfort on the same trip.
+Railflow predicts a train cabin's temperature a few minutes ahead and
+recommends a cabin setpoint (a target temperature) earlier than a normal
+thermostat would react on its own — not a power command: Railflow's own
+compute never touches the real HVAC unit's control electronics (doing so
+would void the manufacturer's warranty), so it only ever suggests a target,
+the same way a passenger or technician could via a thermostat. The demo
+shows two advisors running side by side on the same simulated train
+journey: the old way (a simple on/off thermostat, always targeting a fixed
+schedule) and the new way (the anticipatory advisor, adjusting its target
+ahead of known changes). Both recommendations are then fed to the same
+simulated on/off unit, so you're comparing the two *recommendations*, not
+two different pieces of hardware. You compare their energy use and comfort
+on the same trip.
 
 All data is simulated — real weather, a physically modelled cabin, but no
 real train was involved. That's a stated limitation, not a secret.
@@ -86,9 +94,12 @@ it and the trip plays forward automatically from wherever the slider is.
 
 **The chart**
 Top panel: cabin temperature over time for both controllers (red = on/off,
-green = anticipatory), with the comfort band shaded. Middle panel: what
-each controller was actually commanding the HVAC to do, minute by minute.
-Bottom panel: cabin humidity (%RH) for both controllers — a caption under
+green = anticipatory), with the comfort band shaded. Middle panel: the
+cabin setpoint (target temperature) each controller was recommending,
+minute by minute — not a power command. Railflow's own deliverable is this
+recommended target; a separate, unmodified on/off unit (simulated
+identically for both controllers) is what actually decides how hard to run
+in response to it. Bottom panel: cabin humidity (%RH) for both controllers — a caption under
 the chart explains why it isn't part of the AC's energy/comfort score (the
 simulation doesn't yet model the AC removing moisture while it cools, so
 this panel is a disclosed upper bound, not a fully corrected number).
@@ -127,7 +138,7 @@ plain numbers/text instead of an interactive page:
 ```bash
 python -m src.compare_controllers   # prints the headline energy/comfort comparison
 python -m src.sweep_tau_act         # re-runs it across a range of assumed HVAC response delays
-python -m pytest tests/ -q          # runs the full automated test suite (229 checks)
+python -m pytest tests/ -q          # runs the full automated test suite (273 checks)
 ```
 
 ## 7. Where to look for more

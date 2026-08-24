@@ -15,12 +15,19 @@ that is a second, separate protocol — out of scope here, and shouldn't
 reuse this frame format, since mixing directions on one wire format
 tends to make both harder to reason about.
 
-Each frame carries **both** the sensor readings Railflow's controller used
-for its decision (`t_in_c`, `t_out_c`, `n_pass`) **and** the decision itself
-(`setpoint_c`, `q_cmd`). The board is not expected to trust Railflow's
-copy of the sensor readings over its own local sensors if it has them —
-they're included so the board can log/display/cross-check what Railflow
-saw, not because the board has no other way to get them.
+Each frame carries the sensor readings Railflow's advisor used to reach its
+recommendation (`t_in_c`, `t_out_c`, `n_pass`) and the recommendation itself:
+**`setpoint_c` is the decision this protocol exists to deliver** — a target
+cabin temperature, not a power command (see §4.1 for why: Railflow's own
+compute cannot touch a real HVAC unit's control electronics without voiding
+the manufacturer's warranty, so it recommends a setpoint the board's own
+existing control logic acts on, the same way a passenger or technician could
+via a thermostat). `q_cmd` also rides along, but only as an optional,
+simulation-only diagnostic — not a value the board should act on. The board
+is not expected to trust Railflow's copy of the sensor readings over its own
+local sensors if it has them — they're included so the board can
+log/display/cross-check what Railflow saw, not because the board has no
+other way to get them.
 
 ## 2. Physical layer
 
@@ -64,25 +71,35 @@ R,142,24.3,38.7,52,25.1,-0.67*3F
 | `t_in_c` | float | 1 decimal place | −10.0 to 60.0 | Cabin air temperature, °C. Range matches the bound this project's own controller sensitivity tests already assert on simulated cabin air temperature (`tests/test_controllers.py`). |
 | `t_out_c` | float | 1 decimal place | −10.0 to 55.0 | Outside air temperature, °C. Upper bound has headroom above the corridor's real measured 2024 peak (48.1 °C, Aswan — see `docs/PARAMETERS.md`). |
 | `n_pass` | uint | decimal | 0–100 | Passenger count aboard. Upper bound has headroom above the highest scenario in this project's catalogue (80 seats × 1.1 load factor ≈ 88 — see `src/occupancy.py`). |
-| `setpoint_c` | float | 1 decimal place | 22.0–26.0 | Target cabin temperature, °C — this project's sliding EN 13129-style setpoint (`config/cabin_params.yaml`'s `comfort.sliding_setpoint_low_c`/`sliding_setpoint_high_c`). |
-| `q_cmd` | float | 2 decimal places, signed | −1.00 to 1.00 | **Commanded capacity fraction, not watts** — see §4.1 for why. Negative = cooling, positive = heating, 0.00 = off. |
+| `setpoint_c` | float | 1 decimal place | 22.0–26.0 | **The decision this protocol exists to deliver** — target cabin temperature, °C, this project's sliding EN 13129-style setpoint (`config/cabin_params.yaml`'s `comfort.sliding_setpoint_low_c`/`sliding_setpoint_high_c`). The same kind of value a passenger or technician could enter on the unit's own thermostat — see §4.1. |
+| `q_cmd` | float | 2 decimal places, signed | −1.00 to 1.00 | **Simulation-only diagnostic, not a value the board should act on** — see §4.1. Commanded capacity fraction as Railflow's own simulated `PlantResponse` (src/controllers.py) computed it internally, kept for telemetry/debugging. Negative = cooling, positive = heating, 0.00 = off. |
 | `checksum` | hex | 2 uppercase hex digits | 00–FF | XOR of every byte in the payload between the first comma after `R` and the `*` (i.e. `seq` through `q_cmd`, commas included, marker and `*` excluded). Same convention NMEA-0183 uses for exactly the same reason: a human can recompute it by hand from a terminal capture with no tooling, which matters when debugging a link with a scope or a bare serial monitor and nothing else. |
 
-### 4.1 Why `q_cmd` is a fraction, not watts
+### 4.1 Why `setpoint_c`, not a power command
 
-The obvious alternative was to send a commanded power in watts, matching
-`CabinModel`'s internal `q_hvac_cmd_w`. That was deliberately rejected:
-watts would only be meaningful to the board if the board's real HVAC unit
-happens to share Railflow's *modelled* capacity (`cooling_capacity_w`/
+The real reason: Railflow's own compute cannot touch a real HVAC unit's
+control electronics — doing so would void the manufacturer's warranty. A
+setpoint is something every thermostatically-controlled unit already
+accepts through its existing interface (a dial, remote, or BMS register),
+with zero hardware modification; a power/capacity command is not.
+
+There's a second, independent reason this would have been the right call
+even without that constraint: the obvious alternative was to send a
+commanded power in watts, matching `CabinModel`'s internal `q_hvac_cmd_w`.
+That would only be meaningful to the board if the board's real HVAC unit
+happened to share Railflow's *modelled* capacity (`cooling_capacity_w`/
 `heating_capacity_w` in `config/cabin_params.yaml`) — two numbers that have
 no reason to match exactly, and no way for either side to detect it if they
-don't. A normalized fraction of rated capacity needs the board to know only
-its *own* actuator's real capacity to turn this into a duty cycle or
-compressor stage, which is a number the board side already has to know
-regardless. This also happens to be a value Railflow already computes for
-its own diagnostics — `AnticipatoryController.last_frac` in
-`src/controllers.py` — so sending it is reusing an existing number, not
-deriving a new one.
+don't. A setpoint needs the board to know nothing about Railflow's modelled
+capacity at all — only its *own* actuator's behaviour, which is a number the
+board side already has to know regardless.
+
+`q_cmd` is still sent alongside `setpoint_c`, unchanged in format, but only
+as a simulation-only diagnostic: the capacity fraction Railflow's own
+`PlantResponse` (src/controllers.py) — a stand-in for a generic on/off unit,
+used purely for evaluation — computed internally in response to that same
+setpoint. It documents what Railflow *simulated* the receiving unit doing,
+not an instruction to the real board.
 
 ## 5. Cadence
 
@@ -149,10 +166,15 @@ questions" is the actual bar (see `ROADMAP.md`'s M8 section):
 6. **Implement a link-loss watchdog.** If no *valid* frame (passed
    checksum) arrives within 3 nominal intervals (90 s at the §5 cadence),
    assume the link or the sender is down and fall back to a safe default —
-   HVAC off (`q_cmd = 0`) is the recommended default, not whatever the last
-   received command was. Silently continuing to act on a stale command
-   forever is the one failure mode this document will not leave to
-   judgement: don't do it.
+   **the board reverting to its own local/default setpoint** (whatever it
+   would use with no external advisor connected at all) is the recommended
+   default under the M10 reframing, not whatever `setpoint_c` was last
+   received. This is arguably a safer fallback than the pre-M10 convention
+   (`q_cmd = 0`, forcing the HVAC fully off) — reverting to the board's own
+   normal behaviour is closer to "acts as if Railflow were never connected"
+   than "acts as if the HVAC itself should stop." Whatever the specific
+   default, silently continuing to act on a stale command forever is the
+   one failure mode this document will not leave to judgement: don't do it.
 
 ## 8. What this protocol deliberately does not do
 

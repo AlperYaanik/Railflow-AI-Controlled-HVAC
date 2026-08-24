@@ -121,6 +121,38 @@ def test_run_controller_matches_the_manually_traced_reference(cfg, require_weath
     assert result.minutes == len(traj)
 
 
+def test_run_controller_reports_advised_setpoint_distinct_from_scoring_setpoint(cfg, require_weather):
+    """M10 wiring check: advised_setpoint_c (what THIS advisor recommended)
+    and setpoint_c (the fixed EN13129 reference every arm is SCORED against)
+    are different columns answering different questions -- easy to conflate
+    since they're often equal. For ThermostatController, whose whole job is
+    "always recommend the static schedule", they must be equal every minute:
+    if they aren't, PlantResponse and CabinModel.setpoint() have drifted
+    apart. For an advisor that actually adjusts its recommendation, they
+    must differ at least sometimes, or the "recommend a setpoint" reframing
+    isn't actually doing anything.
+    """
+    from src.controllers import AnticipatorySetpointAdvisor
+    from src.features import LiveFeatureBuilder
+    from src.train import MODEL_PATH
+
+    if not MODEL_PATH.exists():
+        pytest.skip("no saved model. Run:  python -m src.train")
+    import lightgbm as lgb
+    booster = lgb.Booster(model_file=str(MODEL_PATH))
+
+    thermo = run_controller(lambda model: ThermostatController(model), cfg)
+    assert (thermo["advised_setpoint_c"] == thermo["setpoint_c"]).all()
+
+    def antic_factory(model):
+        builder = LiveFeatureBuilder(cfg, city="cairo", direction="down",
+                                      pattern="semi_express", load_factor=1.0, depart_hour=8.0)
+        return AnticipatorySetpointAdvisor(model, booster, builder)
+
+    antic = run_controller(antic_factory, cfg)
+    assert (antic["advised_setpoint_c"] != antic["setpoint_c"]).any()
+
+
 def test_run_controller_reports_real_weather_driven_humidity(cfg, require_weather):
     """M9's humidity state was built and tested inside CabinModel but never
     reached run_controller()'s output -- found during a whole-project review
@@ -182,7 +214,7 @@ def test_saturation_cap_can_make_two_controllers_moisture_diverge(cfg, require_w
     This test locks in "close" (a small bound) rather than the stronger,
     now-known-false "identical" claim an earlier version of this test made.
     """
-    from src.controllers import AnticipatoryController
+    from src.controllers import AnticipatorySetpointAdvisor
     from src.features import LiveFeatureBuilder
     from src.train import MODEL_PATH
 
@@ -194,7 +226,7 @@ def test_saturation_cap_can_make_two_controllers_moisture_diverge(cfg, require_w
     def antic_factory(model):
         builder = LiveFeatureBuilder(cfg, city="cairo", direction="down",
                                       pattern="semi_express", load_factor=1.0, depart_hour=8.0)
-        return AnticipatoryController(model, booster, builder)
+        return AnticipatorySetpointAdvisor(model, booster, builder)
 
     thermo = run_controller(lambda model: ThermostatController(model), cfg)
     antic = run_controller(antic_factory, cfg)
