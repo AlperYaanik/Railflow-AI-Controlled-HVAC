@@ -296,6 +296,30 @@ hvac:
   advisor_setpoint_min_c: 18.0
   advisor_setpoint_max_c: 30.0
 
+  # M13: StationPrecoolAdvisor -- a SEPARATE, schedule-driven anticipatory
+  # mechanism, deliberately not routed through AnticipatorySetpointAdvisor's
+  # ff_weight blend. Both M10 Phase 2 and M12 found that a GENERIC ML-forecast
+  # blend (ff_weight>0) hurts aggregate energy/comfort across the TEST split
+  # -- a different question from "does the system visibly pre-empt a KNOWN,
+  # schedule-certain event (a station stop, with its boarding heat/humidity
+  # load) the way a human driver easing off before a hill would." This param
+  # targets that second, narrower, demonstrable claim directly, using
+  # time_to_next_station_min (already computed by occupancy.py, exact --
+  # not a prediction) rather than the LightGBM forecast.
+  #
+  # station_precool_shift_k: [ASSUMPTION], deliberately anchored to the
+  # team's own illustrative example (22 C setpoint pulled to 19 C ahead of a
+  # stop) rather than derived or swept -- this is a single, simple, explained
+  # rule (constant shift while a station is within
+  # simulation.control_horizon_min minutes out, zero otherwise -- see
+  # StationPrecoolAdvisor's own docstring in src/controllers.py), matching
+  # this project's established "simple, rule-based, not a trained model"
+  # treatment of every other event-triggered mechanism (tint_controller.py).
+  # Sign is negative (cooling direction) since this project's actuator
+  # reaction is cooling-only by design -- see BangBangPlantResponse's
+  # docstring for why every on/off mechanism here is.
+  station_precool_shift_k: -3.0
+
 comfort:
   # EN 13129 defines interior temperature as a sliding function of outdoor
   # temperature rather than a fixed setpoint. This is a simplified version of

@@ -47,6 +47,7 @@ from src.controllers import (
     BangBangPlantResponse,
     ControllerInputs,
     PlantResponse,
+    StationPrecoolAdvisor,
     ThermostatController,
 )
 from src.evaluate import run_controller
@@ -410,3 +411,89 @@ def test_plant_response_commands_more_for_a_setpoint_further_away(cfg):
     cmd_near = plant.respond(t_air_c=30.0, setpoint_c=28.0)   # 2 K error
     cmd_far = plant.respond(t_air_c=30.0, setpoint_c=19.0)    # 11 K error, same call count so far
     assert cmd_far < cmd_near < 0.0, "a colder commanded setpoint must call for more cooling, not the same amount"
+
+
+# --------------------------------------------------------- StationPrecoolAdvisor (M13)
+
+def _controller_inputs(time_to_next_station_min: float, **overrides) -> ControllerInputs:
+    """Minimal ControllerInputs for exercising StationPrecoolAdvisor in
+    isolation -- it reads only time_to_next_station_min, but the dataclass
+    has no defaults (every field is real simulation state), so every other
+    field needs SOME value here even though this advisor ignores them."""
+    base = dict(t_air_c=25.0, t_mass_c=25.0, t_out_c=35.0, ghi_w_m2=500.0, n_pax=50,
+                door_open=False, q_hvac_actual_w=0.0, time_to_next_station_min=time_to_next_station_min,
+                expected_boarding=10, t_out_fcst_h=35.0, ghi_fcst_h=500.0)
+    base.update(overrides)
+    return ControllerInputs(**base)
+
+
+def test_station_precool_advisor_fires_only_within_the_lead_window():
+    """The core rule, stated directly: nonzero (and equal to shift_k, not a
+    ramped fraction of it -- see the class docstring on why a constant step
+    was chosen over a ramp) strictly inside (0, lead_min], zero everywhere
+    else including exactly at 0 (arrival) and beyond the lead window.
+    """
+    advisor = StationPrecoolAdvisor(lead_min=30.0, shift_k=-3.0)
+
+    assert advisor.precool_shift_c(_controller_inputs(31.0)) == 0.0, "just outside the window"
+    assert advisor.precool_shift_c(_controller_inputs(30.0)) == -3.0, "at the window's outer edge"
+    assert advisor.precool_shift_c(_controller_inputs(15.0)) == -3.0, "mid-window"
+    assert advisor.precool_shift_c(_controller_inputs(1.0)) == -3.0, "just before arrival"
+    assert advisor.precool_shift_c(_controller_inputs(0.0)) == 0.0, "at/after arrival -- see class docstring"
+
+
+def test_station_precool_advisor_reduces_the_excursion_around_a_real_station_stop(require_model, cfg):
+    """The actual claim this milestone exists to demonstrate, traced on a
+    real scenario rather than asserted from the rule alone: the peak
+    ABSOLUTE cabin temperature reached during and just after a station stop
+    is lower with StationPrecoolAdvisor active than with
+    AnticipatorySetpointAdvisor alone, on the SAME scenario, SAME advisor
+    otherwise -- directly matching the team's own "would have hit 25, stays
+    at 22 instead" framing.
+
+    Deliberately NOT `err_c` (t_air_c minus the fixed EN13129 sliding
+    setpoint) -- tried that first and it came back a false negative: at
+    Benha specifically, the precooled trajectory happens to sit BELOW the
+    sliding setpoint right as the baseline trajectory happens to sit close
+    to it, so |err_c| looked coincidentally similar (1.199 vs 1.198 C)
+    despite the precooled run being 1.5-2.7 C cooler in absolute terms
+    through the entire approach (traced minute by minute, not assumed) --
+    the sliding setpoint is an external reference unrelated to this
+    mechanism's actual goal (blunt the RISE from boarding), so comparing
+    against it can wash out a real effect depending on where that external
+    reference happens to sit. Peak absolute t_air_c has no such confound.
+
+    Benha (config/cabin_params.yaml's second timetable stop, arrive_min=45)
+    on the default scenario -- picked because it is not the journey's first
+    stop (Cairo Ramses at t=0 has no "before" to precool from) and has real
+    boarding attached (14 passengers).
+    """
+    import lightgbm as lgb
+
+    booster = lgb.Booster(model_file=str(MODEL_PATH))
+    station_arrive_min = 45
+    window = range(station_arrive_min - 5, station_arrive_min + 11)
+
+    def make_advisor_factory():
+        def factory(model):
+            builder = LiveFeatureBuilder(cfg, city="cairo", direction="down", pattern="semi_express",
+                                          load_factor=1.0, depart_hour=8.0)
+            return AnticipatorySetpointAdvisor(model, booster, builder)
+        return factory
+
+    without_precool = run_controller(make_advisor_factory(), cfg)
+    with_precool = run_controller(
+        make_advisor_factory(), cfg,
+        station_precool_advisor=StationPrecoolAdvisor(
+            lead_min=cfg["simulation"]["control_horizon_min"],
+            shift_k=cfg["hvac"]["station_precool_shift_k"],
+        ),
+    )
+
+    peak_t_air_without = without_precool.loc[without_precool["t"].isin(window), "t_air_c"].max()
+    peak_t_air_with = with_precool.loc[with_precool["t"].isin(window), "t_air_c"].max()
+    assert peak_t_air_with < peak_t_air_without, (
+        f"precooling ahead of the Benha stop should lower the peak cabin temperature reached "
+        f"around it ({peak_t_air_with:.2f} C), not leave it the same or worse "
+        f"({peak_t_air_without:.2f} C without precool)"
+    )
