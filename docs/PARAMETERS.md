@@ -447,7 +447,8 @@ event, not simply "passengers board" — the presentation should say so.
 | `plant_response_kp_w_per_k` | 4000.0 | **Low — swept in M12** |
 | `plant_response_ki_w_per_k_per_s` | 4.0 | **Low — swept in M12** |
 | `advisor_setpoint_min_c` / `advisor_setpoint_max_c` | 18.0 / 30.0 | Low |
-| `station_precool_shift_k` | -3.0 | **Low — anchored to team's own example, not swept (M13)** |
+| `station_precool_shift_k` | -1.0 | **Low — swept in M13 after the original -3.0 measured worse on both metrics** |
+| `station_precool_lead_min` | 15 | **Low — swept in M13; was borrowed from `control_horizon_min` (30)** |
 
 ### Thermostat hysteresis (M5)
 
@@ -549,19 +550,16 @@ answered by a deliberately SEPARATE mechanism, not by reopening `ff_weight`
 energy/comfort — a different question from "can the system anticipate one
 specific, schedule-certain event").
 
-`station_precool_shift_k = -3.0` — **`[ASSUMPTION]`**, anchored directly to
-the team's own illustrative example (22 °C pulled to 19 °C ahead of a stop),
-not derived or swept — a single, simple, explained rule, matching this
-project's established "rule-based, not trained" treatment of every other
-event-triggered mechanism (`tint_controller.py`). `lead_min` reuses
-`simulation.control_horizon_min` (30 min) rather than inventing a fourth
-lookahead constant — already established for M4's forecast and M11's tint
-advisor, and comfortably exceeds the actuator's dead-time/lag (~7 min) plus
-`PlantResponse`'s PI settling time (~17 min), so the plant has the full
-window to actually reach the lower setpoint, not just start moving toward
-it. Applied as a CONSTANT across the whole lead window, not a ramp — a ramp
-would only reach full strength at the moment of arrival, exactly when the
-time to actually cool down has run out.
+`station_precool_shift_k = -1.0`, `station_precool_lead_min = 15` —
+**`[ASSUMPTION]`**, both swept (see the re-measurement note below). The
+originals were `-3.0 K` over a `30 min` lead: `-3.0` anchored to the team's
+own illustrative example (22 °C pulled to 19 °C ahead of a stop) rather than
+derived, and `30` borrowed from `simulation.control_horizon_min`. Both are
+kept visible here rather than overwritten, same as every other superseded
+number in this document. Applied as a CONSTANT across the whole lead window,
+not a ramp — a ramp would only reach full strength at the moment of arrival,
+exactly when the time to actually cool down has run out (5/10/15-minute ramps
+were tested and kept 46–78% less of the temperature benefit).
 
 **Deliberately not throttled by `advisor_update_interval_min`** (M12) —
 that throttle exists because a feedback-driven shift fights `PlantResponse`'s
@@ -578,8 +576,38 @@ precool active — real, right direction, well short of a literal "stays at
 that first compared against the fixed EN13129 setpoint (`err_c`) came back a
 coincidental false negative (1.199 vs 1.198 °C) despite the precooled
 trajectory being visibly cooler throughout when traced minute by minute —
-fixed to compare peak absolute `t_air_c`, which has no such confound. Full
-trace and numbers in ROADMAP.md's M13 section.
+fixed to compare peak absolute `t_air_c`, which has no such confound.
+
+**RE-MEASURED, and the original `-3.0 K / 30 min` values were wrong on BOTH
+metrics.** Across all 23 TEST scenarios they cost 2.96% more energy AND 22.5%
+more degree-hours than not precooling at all (0/23 better on both, 13/23
+worse on both). Cause: 3.0 K exceeds `comfort.band_k` (2.0 K), so reaching
+the precool target *was itself* a cold-side comfort breach — buying a short
+warm-side breach at each stop by paying for a long cold-side one before it.
+`lead_min` had also been borrowed from `simulation.control_horizon_min`
+(M4's forecast horizon), which answers a different question than "how long
+does the plant need to act" (dead-time 2 + `tau_act` 5 + PI settling ~17 ≈
+24 min) — now split out as `station_precool_lead_min`. Swept 10/15/24 min ×
+−1.0/−1.5 K: **shipped 15 min / −1.0 K gives +6.8% comfort for 0.80%
+energy**, at the efficiency knee (24 min/−1.5 K reaches +9.0% for 1.73%).
+Strictly dominates the naive alternative it was checked against — a −0.5 K
+constant all-journey bias buys +5.7% comfort for 2.00% energy, so event
+targeting delivers more comfort at ~2.5x lower energy cost. Full sweep in
+ROADMAP.md's M13 section.
+
+**Never precools the journey's FINAL station — a real fix, found via a live-
+demo review, not a tuning choice.** Traced why a scenario's cabin drifted
+progressively colder after minute 125 instead of recovering: the precool
+window for the NEXT (and, in that case, final) station re-engaged before
+recovery finished, and the journey then simply ended a few minutes later
+with no remaining time to recover into. Detected via a single comparison
+(`time_to_next_station_min == time_to_last_station_min`, a new field
+counting down once toward `stations[-1]` for the whole journey) rather than
+internal state. Confirmed a strict improvement on all 23 TEST scenarios,
+not a trade-off: total `degree_hours` −13.9%, total energy −1.4%, zero
+scenarios worse on either, peak temperatures at every other station
+bit-identical with or without the fix. See ROADMAP.md's "M13, continued"
+section for the full diagnosis and numbers.
 
 ### Anticipatory controller blend (M5)
 

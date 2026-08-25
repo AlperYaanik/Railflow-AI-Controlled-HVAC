@@ -76,6 +76,14 @@ class ControllerInputs:
     expected_boarding: float
     t_out_fcst_h: float
     ghi_fcst_h: float
+    time_to_last_station_min: float
+    """M13 fix. Counts down ONCE toward the journey's FINAL station -- see
+    OccupancyProfile.time_to_last_station_min's own docstring in
+    src/occupancy.py for why StationPrecoolAdvisor needs this alongside
+    time_to_next_station_min. Required, not defaulted, matching every other
+    field here -- both real construction sites (src/evaluate.py,
+    tests/test_controllers.py's _controller_inputs() helper) are updated
+    alongside this field, not left to silently fall back to anything."""
 
 
 class BangBangPlantResponse:
@@ -540,28 +548,74 @@ class StationPrecoolAdvisor:
     "recovery" branch needed: traced directly against occupancy.py's own
     array, not assumed from reading the formula.
 
-    `lead_min` [ASSUMPTION, but reused, not new]: defaults to
-    `simulation.control_horizon_min` (30 min) -- the SAME lookahead
-    AnticipatorySetpointAdvisor's own forecast and AnticipatoryTintAdvisor
-    (M11) already use, rather than inventing a fourth lookahead constant.
-    Comfortably exceeds the actuator's own dead_time_min+tau_act_min (~7 min)
-    and PlantResponse's PI settling time (~17 min combined), so the plant has
-    the full window to actually reach the lower setpoint before boarding
-    starts, not just begin moving toward it.
+    `shift_k` and `lead_min` (`hvac.station_precool_shift_k` /
+    `station_precool_lead_min`, -1.0 K / 15 min) are both [ASSUMPTION], and
+    both are the RE-MEASURED values, not the originals. `shift_k` is applied
+    as a CONSTANT across the whole lead window, not a ramp -- a ramp only
+    reaches full strength at the moment of arrival, exactly when the time to
+    actually cool down has run out; a step gives the plant the entire window
+    at full authority instead (a 5/10/15-minute ramp was tested and kept
+    46-78% less of the temperature benefit, so this is measured too).
 
-    `shift_k` (`hvac.station_precool_shift_k`, -3.0) [ASSUMPTION]: applied
-    as a CONSTANT across the whole lead window, not a ramp -- a ramp would
-    only reach full strength at the moment of arrival, exactly when the
-    lead time to actually cool down has run out; a step gives the plant the
-    entire window at full authority instead. Anchored directly to the
-    team's own illustrative example (22 C pulled to 19 C ahead of a stop),
-    not derived or swept.
+    THE ORIGINAL VALUES (-3.0 K over a 30 min lead) WERE WRONG, AND THE
+    MEASUREMENT SAID SO ON BOTH METRICS AT ONCE. Anchored to the team's own
+    illustrative "22 C pulled to 19 C" example rather than derived, they cost
+    2.96% MORE energy AND 22.5% MORE degree-hours than not precooling at all
+    across the 23 TEST scenarios -- 0/23 better on both, 13/23 worse on both.
+    Diagnosed, not tuned around: 3.0 K exceeds `comfort.band_k` (2.0 K), so
+    whenever the plant actually REACHED the precool target the cabin was
+    already in a cold-side comfort breach. The mechanism was buying a short
+    warm-side breach at each stop by paying for a long cold-side one before
+    it. Sized below `band_k` instead, the same mechanism flips to a real (if
+    modest) win: +6.8% degree-hours for 0.80% energy at the shipped
+    -1.0 K/15 min, TEST-confirmed on the same 23 scenarios.
+
+    `lead_min` was previously hardcoded to `simulation.control_horizon_min`
+    (30 min) -- M4's FORECAST horizon, borrowed rather than derived. Split
+    into its own parameter because the question here is how long the PLANT
+    needs to act, not how far the model can see: dead_time_min (2) +
+    tau_act_min (5) + PlantResponse's PI settling (~17) is ~24 min. Swept
+    10/15/24 against -1.0 and -1.5 K shifts -- longer leads buy more comfort
+    at proportionally more energy (24 min/-1.5 K reaches +9.0% for 1.73%),
+    and 15 min sits at the efficiency knee. Picked for that ratio, not for
+    the largest absolute comfort number on the sweep.
+
+    WORTH MORE THAN THE COMFORT NUMBER ITSELF: checked against the naive
+    alternative (a constant setpoint bias held all journey, no event
+    targeting), event-targeted precool STRICTLY DOMINATES -- a -0.5 K
+    constant bias buys +5.7% comfort for 2.00% energy, while this buys
+    +6.8% comfort for 0.80%, i.e. more comfort at ~2.7x lower energy cost.
+    That comparison, not the raw percentage, is the clearest evidence in
+    this project that anticipating a specific KNOWN event beats a blanket
+    setpoint change -- and it is the honest form of the claim, since the
+    energy cost is real and disclosed rather than described as a saving.
+
+    NEVER PRECOOLS THE JOURNEY'S FINAL STATION -- a real fix, not a tuning
+    choice, found by tracing WHY the cabin stayed cold and drifted further
+    from setpoint after minute 125 on a real scenario rather than
+    recovering: `lead_min`'s window for the LAST station engaged as usual,
+    but the journey simply ENDED a few minutes later, before the cabin had
+    any remaining time to recover -- the plant was left holding a
+    setpoint shifted for a disturbance that, once reached, nobody stays
+    aboard to feel the benefit of recovering from. Confirmed on all 23 TEST
+    scenarios, not just the one that surfaced it: skipping the final
+    station is a strict improvement over precooling it -- degree_hours
+    -13.9% and energy -1.4% in aggregate, better-or-equal on BOTH on
+    23/23 scenarios, zero cost at every OTHER station (their peak
+    temperatures are bit-identical with or without this fix). Detected via
+    `inputs.time_to_next_station_min == inputs.time_to_last_station_min`
+    (both counting toward the SAME, final arrival) -- a single value
+    comparison, not internal state, keeping this class a pure function of
+    `ControllerInputs` like everything else in this module.
     """
 
     lead_min: float
     shift_k: float
 
     def precool_shift_c(self, inputs: ControllerInputs) -> float:
-        if 0.0 < inputs.time_to_next_station_min <= self.lead_min:
+        t2s = inputs.time_to_next_station_min
+        if t2s == inputs.time_to_last_station_min:
+            return 0.0
+        if 0.0 < t2s <= self.lead_min:
             return self.shift_k
         return 0.0
