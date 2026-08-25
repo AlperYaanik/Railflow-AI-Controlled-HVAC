@@ -489,6 +489,18 @@ Was deferred deliberately, at the user's own request, to a separate pass once Ph
 
 ---
 
+### M11, continued — the anticipatory-vs-reactive claim doesn't survive aggregation
+
+The original section above flagged "anticipatory vs. reactive is close and scenario-dependent (this scenario happens to favour reactive slightly)" but stopped at one scenario. Checked properly across all 23 TEST scenarios (each one crosses both configured tunnels, so every scenario is a fair test of this specific claim): **anticipatory tint uses MORE energy than reactive in 14/23 scenarios, and averages +0.34% WORSE, not better.** M11's own headline ("anticipatory beats reactive, the same differentiator the HVAC advisor uses") does not hold up in aggregate — a genuine finding, not a tuning gap to close.
+
+**Root cause, traced minute by minute, not reasoned about in the abstract.** `AnticipatoryTintAdvisor` reacts to `ghi_fcst_h` — GHI at a FIXED t+`control_horizon_min` (30 min) offset — continuously, not just when a tunnel is near. Whenever that fixed 30-minute window happens to land inside a tunnel, tint drops toward 0 for a few minutes a full 30 minutes BEFORE the real tunnel, while actual sun is still hitting the window at full strength: traced on a real scenario, tint dropped from 0.60 to 0.00 for ~4 minutes at t=30-34, letting through 700+ extra watts of solar gain, while reactive (using perfect CURRENT information, no forecast error) correctly stayed tinted throughout. Outside that ghost-dip window, anticipatory generally runs MORE tinted than reactive on a day with rising GHI (reacting to a higher future value is a conservative bias, not a cost) — but the ghost-dip's cost outweighs that margin in the majority of scenarios.
+
+**This is a structural property of the mechanism, not a parameter to retune.** A FIXED-offset forecast has no way to distinguish "a disturbance is imminent, worth pre-empting" from "a disturbance is exactly 30 minutes away, acted on unconditionally regardless of whether pre-empting it early actually helps." Tinting has no simulated actuator lag (unlike the HVAC's dead-time/tau_act) to justify pre-empting at all — the entire benefit case for anticipatory tint requires SOME lag to compensate for, which this project's own tint model deliberately doesn't have (M11's build notes: "electrochromic glass... typically respond in seconds to a couple of minutes," i.e., fast enough that reacting to CURRENT conditions loses nothing).
+
+**Disclosed in the demo, not quietly dropped.** `src/app.py`'s "Window tinting" section now shows a second chart (`electrical_w` over time, the same quantity the energy metrics sum) directly under the tint-level chart, so the ghost-dip's real cost is visible, not just implied by a percentage — plus a caption stating the 23-scenario result plainly. Matches this project's standing practice for every other negative finding (M10 Phase 2, M12 attempt 1): recorded honestly, not hidden because it complicates the pitch.
+
+---
+
 ### M12 — PlantResponse becomes a black box that converges and holds
 
 **Effort:** ~4h (PI implementation + anti-windup + gain sweep + two-attempt re-tune)
@@ -549,6 +561,46 @@ Matches Phase 2's own old-plant headline almost exactly — another disclosed **
 **A test that initially picked the wrong metric — caught rechecking, not assumed correct.** The first version of the Benha test compared `err_c` (deviation from the fixed EN13129 sliding setpoint) and came back a false negative (1.199 vs 1.198°C, coincidentally near-identical) despite the precooled trajectory being visibly, measurably cooler throughout when traced minute by minute. The sliding setpoint is an external reference this mechanism was never trying to track — comparing against it can wash out a real effect depending on where that reference happens to sit at the sampling window. Fixed to compare peak *absolute* `t_air_c`, which has no such confound and directly matches the team's own framing.
 
 **Done when:** the system can visibly, demonstrably anticipate one specific schedule-known event (not just react to current error) — **reached**, verified by a real minute-by-minute trace, not asserted from the rule alone. The static baseline gets no such advantage, preserving the exact "AI vs. no AI" contrast the mechanism exists to show — **reached**. The energy cost is disclosed alongside the comfort benefit, not hidden — **reached**.
+
+---
+
+### M13, continued — a live-demo review found a real bug, not a tuning gap
+
+A close read of the app's own charts (comfort band + setpoint reference added first, so the deviation was actually visible rather than inferred) surfaced two genuine findings on TEST scenario #6 (aswan): the cabin breached the comfort band even under the anticipatory advisor at minutes 50 and 125, and after minute 125 specifically, temperature drifted progressively COLDER rather than recovering toward setpoint.
+
+**First finding diagnosed, not a bug.** The t=50/t=125 breaches trace to a boarding disturbance (n_pax jumping ~7 passengers in one minute) arriving faster than the actuator's dead-time/lag can reject — a real physical ceiling (disturbance-rejection bandwidth limited by dead-time, the same reason feedforward/anticipatory compensation exists at all in control theory), not a control-law defect. The main "anticipatory vs. static schedule" panel doesn't include `station_precool_advisor` at all (that lives only in its own section) — a genuine, disclosable reason those two lines look nearly identical at exactly the moments that matter most.
+
+**Second finding was a real fix, not a tuning choice.** Traced minute-by-minute why the cabin never recovered after 125: the gap to the NEXT station (165) is 40 minutes, `lead_min`=30 leaves a ~10-minute recovery window, and the cabin genuinely climbs back to ~26.2°C in it by minute 135 — recovery *was* working. But 165 is the journey's **final** station, and its own 30-minute precool window immediately re-engaged at minute 135, holding the cabin at ~23.5-24.2°C for the remaining ~30 minutes with no journey time left to recover into once reached — precooling a stop nobody stays aboard to feel the benefit of.
+
+**Fix:** `StationPrecoolAdvisor` now suppresses precool specifically when the upcoming station is the journey's last one, detected via a single value comparison (`time_to_next_station_min == time_to_last_station_min`, a new `OccupancyProfile`/`ControllerInputs` field counting down ONCE toward `stations[-1]` for the whole journey, unlike `time_to_next_station_min` which resets after every stop) — no internal state added, still a pure function of `ControllerInputs`.
+
+**Confirmed a strict improvement, not a trade-off — the cleanest result this project has produced.** All 23 TEST scenarios, both metrics simultaneously, zero exceptions: total `degree_hours` **21.99 → 18.93 K·h (−13.9%)**, total energy **801.17 → 789.75 kWh (−1.4%)**, `worst_excursion_k` unchanged everywhere, peak temperatures at every OTHER (non-final) station bit-identical with or without the fix. Every prior finding in this project came with some caveat (parity not a win, comfort traded for energy, a metric that disagreed with another); this one has none — a genuine bug, not a design tension, and fixing it cost nothing anywhere it was checked.
+
+An exploratory side-question (could deliberately *minimizing* deviation-from-setpoint, via a `(lead_min, shift_k)` sweep, beat the shipped values?) was tested and abandoned: minimizing deviation and precooling ahead of a disturbance are mechanically opposed goals — every sweep point that deviated less from 26°C did so by precooling less, trending toward "the best way to stay at 26 is to not precool at all." Worth recording as a dead end, not silently dropped, since it's a real, general property of any precooling mechanism, not specific to this implementation.
+
+**Live demo also restructured** off the back of this review: "Station precool" moved to the top of the page (the clearest, most unambiguous result belongs first); its chart gained the same setpoint+comfort-band reference the main panel has (previously showed temperature with no reference to judge it against); its metrics changed from an ad-hoc "peak temp around stops" window to the same `score()`-derived energy/comfort/`worst_excursion_k` triple used everywhere else in the app, so "how much did comfort change, how much did energy change" is answered consistently across every section, not just this one.
+
+---
+
+### M13, re-measured — the original parameters were wrong, and fixing them turned a loss into a win
+
+Once the demo reported precool against the same `score()` metrics as everything else, the aggregate picture became checkable for the first time — and it was bad. Measured across all 23 TEST scenarios, the shipped `-3.0 K` shift over a `30 min` lead cost **2.96% MORE energy AND 22.5% MORE degree-hours** than not precooling at all: **0/23 scenarios better on both, 13/23 worse on both.** The original section above reported a −0.73 °C peak-temperature improvement on one traced stop and an honest "+6.2% energy cost," but never asked whether the whole-journey comfort metric agreed. It didn't.
+
+**Root cause, diagnosed rather than tuned around: `shift_k` (3.0 K) was larger than `comfort.band_k` (2.0 K).** Whenever the plant actually *reached* the precool target, the cabin was already in a cold-side comfort breach — the mechanism was buying a short warm-side breach at each stop by paying for a long cold-side breach before it. Separately, `lead_min` had been borrowed from `simulation.control_horizon_min` (M4's *forecast* horizon, 30 min), which answers a different question than "how long does the plant need to act" (dead-time 2 + `tau_act` 5 + PI settling ~17 ≈ 24 min).
+
+**Sized below `band_k`, the same mechanism flips to a real win.** Swept 10/15/24-minute leads against −1.0 and −1.5 K shifts, all TEST-confirmed:
+
+| lead / shift | energy vs. static | comfort vs. static |
+|---|---|---|
+| 30 min / −3.0 K (original) | −2.96% | **−22.5%** |
+| 10 min / −1.5 K | −0.74% | **+6.5%** |
+| **15 min / −1.0 K (shipped)** | **−0.80%** | **+6.8%** |
+| 24 min / −1.0 K | −1.23% | +7.0% |
+| 24 min / −1.5 K | −1.73% | **+9.0%** |
+
+Shipped 15 min / −1.0 K for sitting at the efficiency knee, not for the largest absolute comfort number on the sweep. `station_precool_lead_min` split out as its own config parameter rather than continuing to borrow the forecast horizon.
+
+**The comparison worth presenting is not the percentage — it's the dominance.** Checked against the naive alternative (a constant setpoint bias held all journey, no event targeting, tested at −0.5/+0.5/+1.0/+1.5 K): a −0.5 K constant bias buys +5.7% comfort for 2.00% energy, while event-targeted precool buys **+6.8% comfort for 0.80%** — more comfort at ~2.5x lower energy cost, strictly dominating it. That is the clearest evidence this project has that anticipating a *specific known event* beats a blanket setpoint change, and it is stated in its honest form: precool costs energy, it does not save it. The constant-bias sweep also confirmed there is no free lunch available anywhere on that axis — energy and comfort move in strictly opposite directions (+1.5 K bias: +5.91% energy, −54% comfort), so any claim of "better on both" from setpoint nudging alone would have been false.
 
 ---
 

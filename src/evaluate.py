@@ -180,6 +180,7 @@ def run_controller(
             expected_boarding=profile.expected_boarding[t],
             t_out_fcst_h=float(w["t_out_c"].iloc[fcst_t]),
             ghi_fcst_h=ghi_fcst,
+            time_to_last_station_min=profile.time_to_last_station_min[t],
         )
         # Called every minute regardless of the update interval -- see
         # advisor_update_interval_min's docstring on why the CALL and the

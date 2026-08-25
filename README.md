@@ -267,7 +267,19 @@ energy benefit is real, not cosmetic: on the demo's default scenario, energy
 drops from 36.95 kWh (no tint) to 34.49–34.67 kWh (reactive/anticipatory,
 roughly tied on this particular scenario). Deliberately rule-based rather
 than a trained model, matching the team's own explicit scope guidance for
-this milestone. Full detail in ROADMAP.md's M11 section.
+this milestone.
+
+**M11, continued: checked properly across all 23 TEST scenarios, the
+anticipatory-beats-reactive claim doesn't hold.** Anticipatory tint uses
+MORE energy than reactive in 14/23 scenarios, averaging +0.34% worse.
+Root cause: reacting to a FIXED t+30min GHI forecast, continuously, means
+tint drops toward 0 a full 30 minutes before every real tunnel, while
+actual sun is still hitting the window — a genuine cost with no actuator
+lag to justify pre-empting in the first place (unlike the HVAC's
+dead-time, tinting has none in this model). Disclosed directly in the
+live demo (a new power-draw chart shows the cost, not just a percentage),
+not dropped because it complicates the pitch. Full detail in ROADMAP.md's
+M11 section.
 
 **M12: the receiving Control Unit becomes a black box that converges and
 holds — a proportional-integral model, replacing the bang-bang one.** A team
@@ -308,8 +320,36 @@ never the static baseline, preserving the exact contrast being demonstrated.
 Verified on a real trace, honestly: peak cabin temperature around a boarding
 stop drops 25.19°C→24.45°C (−0.73°C), at a real energy cost (+6.2% on the
 scenarios checked) — a genuine, demonstrable anticipation effect, disclosed
-as modest rather than oversold as the full "22 stays at 22" framing. Full
-detail in ROADMAP.md's M13 section.
+as modest rather than oversold as the full "22 stays at 22" framing.
+
+**M13, continued: a live-demo review found a real bug — never precool the
+journey's final station.** Reading the app's own charts closely (after
+adding a proper comfort-band/setpoint reference to them) surfaced a scenario
+where the cabin drifted progressively colder instead of recovering after a
+stop. Traced to the precool window for the NEXT station re-engaging before
+recovery finished, and that station being the journey's *last* one — no
+remaining time to recover into once reached. Fixed by suppressing precool
+specifically for the final station (detected via a single value comparison
+against a new schedule field, no internal state added). Confirmed a strict
+improvement, not a trade-off, on all 23 TEST scenarios: `degree_hours`
+−13.9%, energy −1.4%, zero scenarios worse on either, zero cost at every
+other station — the cleanest result this project has produced.
+
+**M13, re-measured: the original precool parameters were wrong, and fixing
+them turned a loss into a win.** Once the demo reported precool against the
+same whole-journey metrics as everything else, the aggregate became
+checkable — and the shipped `-3.0 K / 30 min` values cost 2.96% MORE energy
+AND 22.5% MORE degree-hours than not precooling at all (0/23 better on both,
+13/23 worse). Cause: the 3.0 K shift exceeded the 2.0 K comfort band, so
+*reaching* the precool target was itself a comfort breach. Re-swept and
+sized below the band: **shipped `-1.0 K / 15 min` gives +6.8% comfort for
+0.80% energy.** The number worth presenting isn't that percentage though —
+it's that event-targeted precool **strictly dominates** the naive
+alternative (a constant all-journey setpoint bias buys +5.7% comfort for
+2.00% energy), i.e. more comfort at ~2.5x lower energy cost. That's this
+project's clearest evidence that anticipating a *specific known event*
+beats a blanket setpoint change — stated honestly: precool costs energy, it
+does not save it. Full sweep in ROADMAP.md's M13 section.
 
 ## License
 

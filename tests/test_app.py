@@ -39,14 +39,22 @@ def require_model(require_weather):
 
 
 def _metric_values(at) -> dict:
-    """Streamlit metrics don't expose a stable key, only display order --
-    read them positionally, matching app.py's fixed column layout
-    (on/off energy, anticipatory energy, on/off comfort, anticipatory comfort)."""
-    metrics = at.get("metric")
+    """Looked up by LABEL, not position -- st.metric() exposes .label
+    (confirmed via dataclasses.fields(Metric), not just documented). A
+    positional lookup broke once already: M13 added a "Station precool"
+    section with its own 6 metrics ABOVE this comparison's 4, silently
+    shifting every hardcoded index (metrics[1] started reading precool's
+    "Energy -- with precool" instead of this section's "Energy --
+    anticipatory"). Label lookup survives any future reordering the same
+    way this one didn't.
+    """
+    by_label = {m.label: m for m in at.get("metric")}
     return {
-        "thermo_energy": metrics[0].value, "antic_energy": metrics[1].value,
-        "antic_energy_delta": metrics[1].delta,
-        "thermo_dh": metrics[2].value, "antic_dh": metrics[3].value,
+        "thermo_energy": by_label["Energy — static schedule"].value,
+        "antic_energy": by_label["Energy — anticipatory"].value,
+        "antic_energy_delta": by_label["Energy — anticipatory"].delta,
+        "thermo_dh": by_label["Comfort — static schedule"].value,
+        "antic_dh": by_label["Comfort — anticipatory"].value,
     }
 
 

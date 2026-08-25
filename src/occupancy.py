@@ -65,6 +65,18 @@ class OccupancyProfile:
     about. Empty list (falsy, same as every other field's implicit "off"
     default) for any Service built before M11 or against a config with no
     tunnel_zones_min key, so existing callers see no behaviour change."""
+    time_to_last_station_min: list[int] = field(default_factory=list)
+    """M13 fix: minutes until the JOURNEY'S FINAL station specifically --
+    unlike time_to_next_station_min (which resets after every stop), this
+    counts down ONCE, monotonically, for the whole journey. Lets
+    StationPrecoolAdvisor tell "heading toward an intermediate station"
+    apart from "heading toward the last one" with a single value comparison
+    (time_to_next_station_min == time_to_last_station_min means the next
+    station IS the final one) -- no internal state needed. Exists because
+    precooling ahead of the final station wastes energy/comfort budget on a
+    stop with no remaining journey time to recover into once reached,
+    confirmed on all 23 TEST scenarios (degree_hours -13.9%, energy -1.4%,
+    zero scenarios worse on either -- see ROADMAP.md's M13 section)."""
 
     def __len__(self) -> int:
         return len(self.n_pax)
@@ -253,6 +265,12 @@ def simulate(service: Service, cfg: dict | None = None) -> OccupancyProfile:
             time_to_next[t] = nxt.arrive_min - t
             expected_boarding[t] = round(nxt.boarding_base * service.load_factor)
 
+    # M13 fix: counts down ONCE toward stations[-1] for the whole journey,
+    # unlike time_to_next above which resets after every stop -- see
+    # OccupancyProfile.time_to_last_station_min's own docstring for why.
+    last_arrive_min = stations[-1].arrive_min
+    time_to_last = [last_arrive_min - t for t in range(total_min)]
+
     return OccupancyProfile(
         n_pax=n_pax,
         door_open=door_open,
@@ -261,6 +279,7 @@ def simulate(service: Service, cfg: dict | None = None) -> OccupancyProfile:
         expected_boarding=expected_boarding,
         stations=stations,
         in_tunnel=in_tunnel,
+        time_to_last_station_min=time_to_last,
     )
 
 

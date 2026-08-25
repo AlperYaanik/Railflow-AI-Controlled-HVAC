@@ -189,7 +189,7 @@ def test_anticipatory_setpoint_shift_sign_matches_error_sign(require_model, cfg)
     warm_inputs = ControllerInputs(
         t_air_c=26.0, t_mass_c=26.0, t_out_c=30.0, ghi_w_m2=400.0, n_pax=30,
         door_open=False, q_hvac_actual_w=0.0, time_to_next_station_min=20,
-        expected_boarding=5, t_out_fcst_h=30.0, ghi_fcst_h=400.0,
+        expected_boarding=5, t_out_fcst_h=30.0, ghi_fcst_h=400.0, time_to_last_station_min=100,
     )
     for _ in range(25):
         ctrl.recommend_setpoint(warm_inputs)
@@ -198,7 +198,7 @@ def test_anticipatory_setpoint_shift_sign_matches_error_sign(require_model, cfg)
     hot = ControllerInputs(t_air_c=40.0, t_mass_c=38.0, t_out_c=35.0, ghi_w_m2=600.0,
                             n_pax=60, door_open=False, q_hvac_actual_w=0.0,
                             time_to_next_station_min=20, expected_boarding=10,
-                            t_out_fcst_h=35.0, ghi_fcst_h=600.0)
+                            t_out_fcst_h=35.0, ghi_fcst_h=600.0, time_to_last_station_min=100)
     ctrl.recommend_setpoint(hot)
     assert ctrl.last_setpoint_shift_c < 0.0, (
         "cabin far above setpoint must produce a cooling-direction (negative) shift"
@@ -207,7 +207,7 @@ def test_anticipatory_setpoint_shift_sign_matches_error_sign(require_model, cfg)
     cold = ControllerInputs(t_air_c=10.0, t_mass_c=12.0, t_out_c=15.0, ghi_w_m2=0.0,
                              n_pax=0, door_open=False, q_hvac_actual_w=0.0,
                              time_to_next_station_min=20, expected_boarding=0,
-                             t_out_fcst_h=15.0, ghi_fcst_h=0.0)
+                             t_out_fcst_h=15.0, ghi_fcst_h=0.0, time_to_last_station_min=100)
     ctrl.recommend_setpoint(cold)
     assert ctrl.last_setpoint_shift_c > 0.0, (
         "cabin far below setpoint must produce a heating-direction (positive) shift"
@@ -259,7 +259,7 @@ def test_anticipatory_degenerates_to_pure_feedback_at_ff_weight_zero(require_mod
     inputs = ControllerInputs(t_air_c=30.0, t_mass_c=29.0, t_out_c=35.0, ghi_w_m2=500.0,
                                n_pax=40, door_open=False, q_hvac_actual_w=-5000.0,
                                time_to_next_station_min=20, expected_boarding=10,
-                               t_out_fcst_h=36.0, ghi_fcst_h=520.0)
+                               t_out_fcst_h=36.0, ghi_fcst_h=520.0, time_to_last_station_min=100)
     ctrl.recommend_setpoint(inputs)
     raw = setpoint - 30.0
     excess = abs(raw) - half_band
@@ -292,7 +292,7 @@ def test_anticipatory_deadband_zeroes_a_small_error(require_model, cfg):
     inputs = ControllerInputs(t_air_c=small_error_t_air, t_mass_c=small_error_t_air, t_out_c=35.0,
                                ghi_w_m2=500.0, n_pax=40, door_open=False, q_hvac_actual_w=0.0,
                                time_to_next_station_min=20, expected_boarding=10,
-                               t_out_fcst_h=36.0, ghi_fcst_h=520.0)
+                               t_out_fcst_h=36.0, ghi_fcst_h=520.0, time_to_last_station_min=100)
     recommended = ctrl.recommend_setpoint(inputs)
     assert ctrl.last_setpoint_shift_c == 0.0
     assert recommended == pytest.approx(setpoint)
@@ -327,7 +327,7 @@ def test_anticipatory_warmup_fallback_is_pure_feedback(cfg):
     hot_inputs = ControllerInputs(t_air_c=35.0, t_mass_c=33.0, t_out_c=32.0, ghi_w_m2=500.0,
                                    n_pax=40, door_open=False, q_hvac_actual_w=0.0,
                                    time_to_next_station_min=20, expected_boarding=10,
-                                   t_out_fcst_h=33.0, ghi_fcst_h=520.0)
+                                   t_out_fcst_h=33.0, ghi_fcst_h=520.0, time_to_last_station_min=100)
     recommended = ctrl.recommend_setpoint(hot_inputs)  # minute 0: still in warmup
     setpoint_now = model.setpoint(hot_inputs.t_out_c)
     assert recommended < setpoint_now, (
@@ -415,14 +415,25 @@ def test_plant_response_commands_more_for_a_setpoint_further_away(cfg):
 
 # --------------------------------------------------------- StationPrecoolAdvisor (M13)
 
-def _controller_inputs(time_to_next_station_min: float, **overrides) -> ControllerInputs:
+def _controller_inputs(time_to_next_station_min: float, time_to_last_station_min: float = 9999.0,
+                        **overrides) -> ControllerInputs:
     """Minimal ControllerInputs for exercising StationPrecoolAdvisor in
-    isolation -- it reads only time_to_next_station_min, but the dataclass
-    has no defaults (every field is real simulation state), so every other
-    field needs SOME value here even though this advisor ignores them."""
+    isolation -- it reads only time_to_next_station_min and (M13)
+    time_to_last_station_min, but the dataclass has no defaults (every
+    field is real simulation state), so every other field needs SOME value
+    here even though this advisor ignores them.
+
+    time_to_last_station_min defaults to a value that can never equal
+    time_to_next_station_min in these tests (all well under 9999) -- i.e.
+    "not heading toward the final station" by default. Pass it explicitly
+    equal to time_to_next_station_min to test the final-station suppression
+    (see StationPrecoolAdvisor's own docstring for why that comparison, not
+    internal state, is how it's detected).
+    """
     base = dict(t_air_c=25.0, t_mass_c=25.0, t_out_c=35.0, ghi_w_m2=500.0, n_pax=50,
                 door_open=False, q_hvac_actual_w=0.0, time_to_next_station_min=time_to_next_station_min,
-                expected_boarding=10, t_out_fcst_h=35.0, ghi_fcst_h=500.0)
+                expected_boarding=10, t_out_fcst_h=35.0, ghi_fcst_h=500.0,
+                time_to_last_station_min=time_to_last_station_min)
     base.update(overrides)
     return ControllerInputs(**base)
 
@@ -440,6 +451,32 @@ def test_station_precool_advisor_fires_only_within_the_lead_window():
     assert advisor.precool_shift_c(_controller_inputs(15.0)) == -3.0, "mid-window"
     assert advisor.precool_shift_c(_controller_inputs(1.0)) == -3.0, "just before arrival"
     assert advisor.precool_shift_c(_controller_inputs(0.0)) == 0.0, "at/after arrival -- see class docstring"
+
+
+def test_station_precool_advisor_never_precools_the_final_station():
+    """M13 fix: found by tracing WHY the cabin drifted colder and colder
+    after minute 125 on a real scenario instead of recovering -- the
+    journey ended a few minutes into the final station's precool window,
+    leaving no time to recover. Confirmed a strict improvement on all 23
+    TEST scenarios (degree_hours -13.9%, energy -1.4%, zero worse) -- see
+    ROADMAP.md's M13 section. Suppressed via time_to_next_station_min ==
+    time_to_last_station_min (both counting toward the same, final
+    arrival), NOT via a hardcoded "last" flag.
+    """
+    advisor = StationPrecoolAdvisor(lead_min=30.0, shift_k=-3.0)
+
+    # Heading toward the FINAL station, well inside the lead window --
+    # would fire for an intermediate station (see the test above) but must
+    # NOT fire here.
+    final_station_inputs = _controller_inputs(15.0, time_to_last_station_min=15.0)
+    assert advisor.precool_shift_c(final_station_inputs) == 0.0
+
+    # Same time-to-next-station value, but heading toward an INTERMEDIATE
+    # station (time_to_last_station_min is larger, i.e. the final station
+    # is further away still) -- must fire, confirming the suppression is
+    # specific to the final station, not a blanket change in behaviour.
+    intermediate_station_inputs = _controller_inputs(15.0, time_to_last_station_min=50.0)
+    assert advisor.precool_shift_c(intermediate_station_inputs) == -3.0
 
 
 def test_station_precool_advisor_reduces_the_excursion_around_a_real_station_stop(require_model, cfg):
@@ -485,7 +522,7 @@ def test_station_precool_advisor_reduces_the_excursion_around_a_real_station_sto
     with_precool = run_controller(
         make_advisor_factory(), cfg,
         station_precool_advisor=StationPrecoolAdvisor(
-            lead_min=cfg["simulation"]["control_horizon_min"],
+            lead_min=cfg["hvac"]["station_precool_lead_min"],
             shift_k=cfg["hvac"]["station_precool_shift_k"],
         ),
     )

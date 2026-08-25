@@ -307,18 +307,47 @@ hvac:
   # time_to_next_station_min (already computed by occupancy.py, exact --
   # not a prediction) rather than the LightGBM forecast.
   #
-  # station_precool_shift_k: [ASSUMPTION], deliberately anchored to the
-  # team's own illustrative example (22 C setpoint pulled to 19 C ahead of a
-  # stop) rather than derived or swept -- this is a single, simple, explained
-  # rule (constant shift while a station is within
-  # simulation.control_horizon_min minutes out, zero otherwise -- see
-  # StationPrecoolAdvisor's own docstring in src/controllers.py), matching
-  # this project's established "simple, rule-based, not a trained model"
-  # treatment of every other event-triggered mechanism (tint_controller.py).
-  # Sign is negative (cooling direction) since this project's actuator
-  # reaction is cooling-only by design -- see BangBangPlantResponse's
-  # docstring for why every on/off mechanism here is.
-  station_precool_shift_k: -3.0
+  # station_precool_shift_k: [ASSUMPTION]. Sign is negative (cooling
+  # direction) since this project's actuator reaction is cooling-only by
+  # design -- see BangBangPlantResponse's docstring for why every mechanism
+  # here is.
+  #
+  # ORIGINALLY -3.0, anchored to the team's own illustrative example (22 C
+  # setpoint pulled to 19 C ahead of a stop). MEASURED, and that value was
+  # WRONG -- not marginally, but on both metrics at once: across all 23 TEST
+  # scenarios it cost 2.96% MORE energy AND 22.5% MORE degree-hours than not
+  # precooling at all (0/23 scenarios better on both, 13/23 worse on both).
+  #
+  # Root cause, diagnosed rather than tuned around: 3.0 K exceeds
+  # comfort.band_k (2.0 K) outright, so whenever the plant actually REACHED
+  # the precool target, the cabin was already in a cold-side comfort breach
+  # -- the mechanism was buying a short warm-side breach at a stop by paying
+  # for a long cold-side breach before it. Sized BELOW band_k instead, the
+  # same mechanism flips from losing on both metrics to a real, if modest,
+  # comfort win: -1.0 K at a 15-minute lead gives +6.8% degree-hours for
+  # 0.80% energy, TEST-confirmed on the same 23 scenarios.
+  #
+  # Also strictly better than the naive alternative it was checked against
+  # (a constant setpoint bias applied all journey, no event targeting):
+  # a -0.5 K constant bias buys +5.7% comfort for 2.00% energy, so
+  # event-targeted precool delivers MORE comfort at ~2.7x lower energy cost
+  # -- the clearest evidence in this project that anticipating a specific
+  # known event beats a blanket setpoint change. See ROADMAP.md's M13
+  # section for the full sweep.
+  station_precool_shift_k: -1.0
+
+  # station_precool_lead_min: [ASSUMPTION]. Was previously hardcoded to reuse
+  # simulation.control_horizon_min (30 min, M4's forecast horizon). Split out
+  # as its own parameter because the two quantities answer different
+  # questions: 30 min is how far the ML forecaster usefully predicts, while
+  # this is how much lead time the PLANT needs to act -- dead_time_min (2) +
+  # tau_act_min (5) + PlantResponse's PI settling (~17) is ~24 min, so 30 was
+  # never derived, just borrowed. Swept 10/15/24 against the shipped -1.0 and
+  # -1.5 shifts: longer leads buy more comfort but cost proportionally more
+  # energy (24 min/-1.5 K reaches +9.0% comfort for 1.73% energy), and 15 min
+  # sits at the efficiency knee (+6.8% comfort for 0.80% energy). Picked for
+  # that ratio, not for the largest absolute comfort number available.
+  station_precool_lead_min: 15
 
 comfort:
   # EN 13129 defines interior temperature as a sliding function of outdoor

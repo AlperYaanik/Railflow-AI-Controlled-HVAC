@@ -43,7 +43,7 @@ from src.controllers import (
 )
 from src.evaluate import run_controller, score
 from src.features import LiveFeatureBuilder
-from src.tint_controller import AnticipatoryTintAdvisor, ReactiveTintController
+from src.tint_controller import ReactiveTintController
 from src.train import MODEL_PATH
 
 st.set_page_config(page_title="Railflow", layout="wide")
@@ -91,11 +91,18 @@ def run_both(city, date, depart_hour, direction, pattern, load_factor):
 
 @st.cache_data(show_spinner="Running the window-tint comparison...")
 def run_tint_comparison(city, date, depart_hour, direction, pattern, load_factor):
-    """M11: same scenario, same HVAC advisor (AnticipatorySetpointAdvisor) in
-    all three runs -- ONLY the tint controller varies -- so any energy
-    difference is isolated to tinting's effect, not conflated with a
-    different HVAC decision. See src/tint_controller.py's module docstring
-    for why both tint controllers are rule-based rather than trained.
+    """M11, simplified after M11-continued's finding: only no-tint vs
+    REACTIVE (SPD-style) tint runs live here now. AnticipatoryTintAdvisor
+    was checked across all 23 TEST scenarios and found to use MORE energy
+    than reactive in 14/23, averaging +0.34% worse -- a fixed t+30min
+    forecast fires a "ghost tunnel" dip a full 30 minutes before every real
+    one, while actual sun is still hitting the window (see ROADMAP.md's
+    "M11, continued" section for the full mechanism and numbers). The class
+    itself (src/tint_controller.py) is untouched and still tested
+    (tests/test_tint_controller.py) -- this only stops the live demo from
+    presenting a comparison whose own "anticipatory wins" framing didn't
+    survive proper checking. Same HVAC advisor (AnticipatorySetpointAdvisor)
+    in both runs, so any energy difference is isolated to tinting.
     """
     cfg = load_config()
     booster = get_booster()
@@ -110,11 +117,7 @@ def run_tint_comparison(city, date, depart_hour, direction, pattern, load_factor
 
     no_tint = run_controller(hvac_factory, tint_controller=None, **run_kwargs)
     reactive = run_controller(hvac_factory, tint_controller=ReactiveTintController(), **run_kwargs)
-    anticipatory = run_controller(hvac_factory, tint_controller=AnticipatoryTintAdvisor(), **run_kwargs)
-    return (
-        no_tint, reactive, anticipatory,
-        score(no_tint, cfg), score(reactive, cfg), score(anticipatory, cfg),
-    )
+    return no_tint, reactive, score(no_tint, cfg), score(reactive, cfg)
 
 
 @st.cache_data(show_spinner="Running the station-precool comparison...")
@@ -142,19 +145,20 @@ def run_precool_comparison(city, date, depart_hour, direction, pattern, load_fac
     with_precool = run_controller(
         hvac_factory, **run_kwargs,
         station_precool_advisor=StationPrecoolAdvisor(
-            lead_min=cfg["simulation"]["control_horizon_min"],
+            lead_min=cfg["hvac"]["station_precool_lead_min"],
             shift_k=cfg["hvac"]["station_precool_shift_k"],
         ),
     )
     return without_precool, with_precool, score(without_precool, cfg), score(with_precool, cfg)
 
 
-st.title("Railflow — anticipatory HVAC vs. today's on/off control")
+st.title("Railflow — anticipatory HVAC vs. a static setpoint schedule")
 st.caption(
     "Same simulator and controllers M4–M6 were built and tested on — this demo "
     "reuses run_controller() and score() directly, not a separate reimplementation."
 )
 
+cfg = load_config()
 booster = get_booster()
 if booster is None:
     st.error(f"No trained model at {MODEL_PATH}. Run `python -m src.train` first.")
@@ -208,6 +212,99 @@ default_index = _default_matches[0] if _default_matches else 0
 choice = st.sidebar.selectbox("Pick a journey", scenarios["label"], index=default_index)
 row = scenarios.loc[scenarios["label"] == choice].iloc[0]
 
+st.header("Station precool (M13)")
+st.caption(
+    "Same scenario, same HVAC advisor — only station_precool_advisor differs. A station stop is a "
+    "KNOWN, schedule-certain event (occupancy.py's time_to_next_station_min counts down exactly, "
+    "not a prediction): doors open, passengers board, heat and humidity load rises. Deliberately not "
+    "routed through the same forecast blend (ff_weight) as the general advisor below — M10/M12 both "
+    "found that generic ML-forecast blend hurts aggregate energy/comfort; this targets one specific, "
+    "demonstrable event directly instead."
+)
+
+try:
+    without_precool_traj, with_precool_traj, without_precool_score, with_precool_score = (
+        run_precool_comparison(row.city, row.date, row.depart_hour, row.direction, row.pattern, row.load_factor)
+    )
+
+    precool_saving_pct = 100.0 * (1.0 - with_precool_score.energy_kwh / without_precool_score.energy_kwh)
+    ppcol1, ppcol2, ppcol3, ppcol4 = st.columns(4)
+    ppcol1.metric("Energy — no precool", f"{without_precool_score.energy_kwh:.2f} kWh")
+    ppcol2.metric("Energy — with precool", f"{with_precool_score.energy_kwh:.2f} kWh",
+                  f"{precool_saving_pct:+.1f}%")
+    ppcol3.metric("Comfort — no precool", f"{without_precool_score.degree_hours:.2f} K·h")
+    ppcol4.metric("Comfort — with precool", f"{with_precool_score.degree_hours:.2f} K·h",
+                  f"{with_precool_score.degree_hours - without_precool_score.degree_hours:+.2f} K·h",
+                  delta_color="inverse")
+
+    ppcol5, ppcol6 = st.columns(2)
+    ppcol5.metric("Worst deviation from setpoint — no precool", f"{without_precool_score.worst_excursion_k:.2f} K")
+    ppcol6.metric("Worst deviation from setpoint — with precool", f"{with_precool_score.worst_excursion_k:.2f} K",
+                  f"{with_precool_score.worst_excursion_k - without_precool_score.worst_excursion_k:+.2f} K",
+                  delta_color="inverse")
+    st.caption(
+        "\"Worst deviation\" is worst_excursion_k -- the largest |cabin temp − setpoint| gap anywhere "
+        "in the WHOLE journey (same metric ScenarioResult/score() uses everywhere else in this app), "
+        "not a number picked from around one specific stop."
+    )
+
+    fig_precool, (ax_pc_temp, ax_pc_set) = plt.subplots(
+        2, 1, figsize=(11, 5.5), sharex=True, gridspec_kw={"height_ratios": [2, 1]})
+
+    door_t = with_precool_traj.loc[with_precool_traj["door_open"], "t"].tolist()
+    for ax in (ax_pc_temp, ax_pc_set):
+        if door_t:
+            run_start = prev = door_t[0]
+            first_label = True
+            for m in door_t[1:] + [None]:
+                if m is not None and m == prev + 1:
+                    prev = m
+                    continue
+                ax.axvspan(run_start, prev + 1, color="gray", alpha=0.25,
+                           label="station stop" if first_label else None)
+                first_label = False
+                if m is not None:
+                    run_start = prev = m
+
+    precool_band_k = cfg["comfort"]["band_k"]
+    ax_pc_temp.fill_between(without_precool_traj["t"], without_precool_traj["setpoint_c"] - precool_band_k,
+                             without_precool_traj["setpoint_c"] + precool_band_k,
+                             color="green", alpha=0.12, label=f"comfort band (±{precool_band_k:g} K, scored)")
+    ax_pc_temp.plot(without_precool_traj["t"], without_precool_traj["setpoint_c"], "--", color="gray",
+                     linewidth=1, label="setpoint")
+    ax_pc_temp.plot(without_precool_traj["t"], without_precool_traj["t_air_c"], color="#ff7f0e",
+                     linewidth=1.6, label="AI, no precool")
+    ax_pc_temp.plot(with_precool_traj["t"], with_precool_traj["t_air_c"], color="#2ca02c",
+                     linewidth=1.6, label="AI + station precool")
+    ax_pc_temp.set_ylabel("cabin air temp (°C)")
+    ax_pc_temp.legend(loc="upper right", fontsize=8)
+    ax_pc_temp.grid(alpha=0.3)
+
+    ax_pc_set.plot(without_precool_traj["t"], without_precool_traj["advised_setpoint_c"], color="#ff7f0e",
+                    linewidth=1.2, label="AI, no precool")
+    ax_pc_set.plot(with_precool_traj["t"], with_precool_traj["advised_setpoint_c"], color="#2ca02c",
+                    linewidth=1.2, label="AI + station precool")
+    ax_pc_set.set_ylabel("recommended\nsetpoint (°C)")
+    ax_pc_set.set_xlabel("minute")
+    ax_pc_set.legend(loc="upper right", fontsize=8)
+    ax_pc_set.grid(alpha=0.3)
+
+    fig_precool.tight_layout()
+    st.pyplot(fig_precool)
+    st.caption(
+        "Top panel: cabin temperature against the actual scored comfort band, not a peak-temperature "
+        "number quoted in isolation. Bottom panel: what the AI actually asked for -- the step drops in "
+        "the green line ARE the precool commands themselves, shown against the same no-precool "
+        "baseline so the request (bottom) and its effect on temperature (top) can be read together. "
+        "shift_k (config/cabin_params.yaml's hvac.station_precool_shift_k) is a single constant, not "
+        "swept or trend-fitted -- see StationPrecoolAdvisor's docstring in src/controllers.py."
+    )
+except FileNotFoundError as e:
+    st.error(f"Missing data file: {e.filename}.")
+
+st.divider()
+st.header("Anticipatory HVAC vs. a static setpoint schedule (M10-M12)")
+
 try:
     thermo_traj, antic_traj, thermo_score, antic_score = run_both(
         row.city, row.date, row.depart_hour, row.direction, row.pattern, row.load_factor
@@ -224,9 +321,9 @@ auto_play = st.sidebar.checkbox("Auto-play from here")
 
 col1, col2, col3, col4 = st.columns(4)
 saving_pct = 100.0 * (1.0 - antic_score.energy_kwh / thermo_score.energy_kwh)
-col1.metric("Energy — on/off", f"{thermo_score.energy_kwh:.2f} kWh")
+col1.metric("Energy — static schedule", f"{thermo_score.energy_kwh:.2f} kWh")
 col2.metric("Energy — anticipatory", f"{antic_score.energy_kwh:.2f} kWh", f"{saving_pct:+.1f}%")
-col3.metric("Comfort — on/off", f"{thermo_score.degree_hours:.2f} K·h")
+col3.metric("Comfort — static schedule", f"{thermo_score.degree_hours:.2f} K·h")
 col4.metric("Comfort — anticipatory", f"{antic_score.degree_hours:.2f} K·h",
             f"{antic_score.degree_hours - thermo_score.degree_hours:+.2f} K·h",
             delta_color="inverse")
@@ -239,12 +336,12 @@ def render(up_to: int):
     fig, (ax_temp, ax_cmd, ax_rh) = plt.subplots(
         3, 1, figsize=(11, 8), sharex=True, gridspec_kw={"height_ratios": [2, 1, 1]})
 
-    ax_temp.fill_between(t["t"], t["setpoint_c"] - 1.0, t["setpoint_c"] + 1.0,
-                          color="green", alpha=0.12, label="thermostat hysteresis band")
+    band_k = cfg["comfort"]["band_k"]
+    ax_temp.fill_between(t["t"], t["setpoint_c"] - band_k, t["setpoint_c"] + band_k,
+                          color="green", alpha=0.12, label=f"comfort band (±{band_k:g} K, scored)")
     ax_temp.plot(t["t"], t["setpoint_c"], "--", color="gray", linewidth=1, label="setpoint")
-    ax_temp.plot(t["t"], t["t_air_c"], color="#d62728", linewidth=1.8, label="on/off")
+    ax_temp.plot(t["t"], t["t_air_c"], color="#d62728", linewidth=1.8, label="static schedule")
     ax_temp.plot(a["t"], a["t_air_c"], color="#2ca02c", linewidth=1.8, label="anticipatory")
-    boarding = t.loc[t["expected_boarding"].fillna(0) > 0, "t"] if "expected_boarding" in t else []
     ax_temp.set_ylabel("cabin air temp (°C)")
     ax_temp.set_title(f"minute {up_to} / {n_minutes - 1}")
     ax_temp.legend(loc="upper right", fontsize=8)
@@ -254,11 +351,16 @@ def render(up_to: int):
     # longer commands power (would require touching the real HVAC unit's
     # control electronics; see src/controllers.py's M10 note). It now shows
     # advised_setpoint_c, the recommendation each advisor actually produces.
-    # ThermostatController's line here exactly overlays the dashed setpoint
-    # reference in the panel above -- an honest visual: the baseline's own
-    # advice IS the static schedule, nothing more.
+    # NOT a continuous overlay of the dashed setpoint reference above, since
+    # M12: advised_setpoint_c only updates every SHIPPED_ADVISOR_UPDATE_
+    # INTERVAL_MIN (50) minutes for BOTH advisors (see that constant's
+    # docstring in src/controllers.py), so it staircases away from the
+    # continuously-updating setpoint_c reference by up to ~0.4 C between
+    # updates -- confirmed by tracing a real run, not assumed. An earlier
+    # version of this comment claimed an exact overlay; that was true only
+    # before M12 introduced the shared update-interval throttle.
     ax_cmd.plot(t["t"], t["advised_setpoint_c"], color="#d62728", linewidth=1.2,
-                label="on/off (static schedule)")
+                label="static schedule")
     ax_cmd.plot(a["t"], a["advised_setpoint_c"], color="#2ca02c", linewidth=1.2,
                 label="anticipatory (AI-recommended)")
     ax_cmd.set_ylabel("recommended cabin setpoint (°C)")
@@ -280,7 +382,7 @@ def render(up_to: int):
     # does. A single shared line was tried first and was wrong (confirmed
     # by a failing test, not caught by inspection), so both are drawn here
     # rather than picking one arbitrarily.
-    ax_rh.plot(t["t"], t["rh_air_pct"], color="#d62728", linewidth=1.2, label="on/off")
+    ax_rh.plot(t["t"], t["rh_air_pct"], color="#d62728", linewidth=1.2, label="static schedule")
     ax_rh.plot(a["t"], a["rh_air_pct"], color="#2ca02c", linewidth=1.2, label="anticipatory")
     ax_rh.axhline(65.0, color="gray", linestyle=":", linewidth=1, label="ISO 19659-2 limit (65%)")
     ax_rh.set_ylabel("cabin RH (%)")
@@ -315,29 +417,26 @@ st.caption(
 st.divider()
 st.header("Window tinting (M11)")
 st.caption(
-    "Same scenario, same HVAC advisor (AnticipatorySetpointAdvisor) in all three runs — only the "
-    "tint controller changes, so any energy difference here is isolated to tinting's effect, not "
-    "mixed in with a different HVAC decision. See src/tint_controller.py: both tint controllers are "
-    "deliberately rule-based, not trained models — the anticipatory-vs-reactive contrast is what's "
-    "being demonstrated."
+    "Same scenario, same HVAC advisor (AnticipatorySetpointAdvisor) in both runs — only the tint "
+    "controller changes, so any energy difference here is isolated to tinting's effect, not mixed in "
+    "with a different HVAC decision. Rule-based, not a trained model (src/tint_controller.py) — "
+    "reacts to CURRENT GHI, the same behaviour a real SPD (Suspended Particle Device) panel's own "
+    "built-in light sensor already gives for free, no forecast involved."
 )
 
 try:
-    no_tint_traj, reactive_traj, antic_tint_traj, no_tint_score, reactive_score, antic_tint_score = (
-        run_tint_comparison(row.city, row.date, row.depart_hour, row.direction, row.pattern, row.load_factor)
+    no_tint_traj, reactive_traj, no_tint_score, reactive_score = run_tint_comparison(
+        row.city, row.date, row.depart_hour, row.direction, row.pattern, row.load_factor
     )
 
-    tcol1, tcol2, tcol3 = st.columns(3)
+    tcol1, tcol2 = st.columns(2)
     tcol1.metric("Energy — no tint", f"{no_tint_score.energy_kwh:.2f} kWh")
     reactive_pct = 100.0 * (1.0 - reactive_score.energy_kwh / no_tint_score.energy_kwh)
-    tcol2.metric("Energy — reactive tint (SPD-style)", f"{reactive_score.energy_kwh:.2f} kWh",
+    tcol2.metric("Energy — SPD-controlled tint", f"{reactive_score.energy_kwh:.2f} kWh",
                  f"{reactive_pct:+.1f}%")
-    antic_pct = 100.0 * (1.0 - antic_tint_score.energy_kwh / no_tint_score.energy_kwh)
-    tcol3.metric("Energy — anticipatory tint", f"{antic_tint_score.energy_kwh:.2f} kWh",
-                 f"{antic_pct:+.1f}%")
 
-    fig_tint, ax_tint = plt.subplots(figsize=(11, 2.8))
-    tunnel_t = antic_tint_traj.loc[antic_tint_traj["in_tunnel"], "t"].tolist()
+    fig_tint, ax_tint = plt.subplots(figsize=(11, 2.6))
+    tunnel_t = reactive_traj.loc[reactive_traj["in_tunnel"], "t"].tolist()
     if tunnel_t:
         # One axvspan per CONTIGUOUS tunnel run, not one per minute.
         run_start = prev = tunnel_t[0]
@@ -351,10 +450,8 @@ try:
             first_label = False
             if m is not None:
                 run_start = prev = m
-    ax_tint.plot(reactive_traj["t"], reactive_traj["tint_level"], color="#ff7f0e", linewidth=1.2,
-                 label="reactive (SPD-style)")
-    ax_tint.plot(antic_tint_traj["t"], antic_tint_traj["tint_level"], color="#2ca02c", linewidth=1.2,
-                 label="anticipatory")
+    ax_tint.plot(reactive_traj["t"], reactive_traj["tint_level"], color="#ff7f0e", linewidth=1.4,
+                 label="SPD-controlled tint")
     ax_tint.set_ylabel("tint level\n(0=clear, 1=dark)")
     ax_tint.set_xlabel("minute")
     ax_tint.set_ylim(-0.05, 1.05)
@@ -362,78 +459,45 @@ try:
     ax_tint.grid(alpha=0.3)
     fig_tint.tight_layout()
     st.pyplot(fig_tint)
-    st.caption(
-        "Reactive tint only responds once GHI has already changed; anticipatory tint reacts to the "
-        "same t+H forecast the HVAC advisor already uses (ghi_fcst_h), so it starts clearing before "
-        "a shaded/tunnel zone and starts darkening before direct sun arrives. Tunnel zones "
-        "(config/cabin_params.yaml's tunnel_zones_min) are an illustrative demo device, not a claim "
-        "about the real Cairo–Alexandria route — see that config key's comment."
-    )
-except FileNotFoundError as e:
-    st.error(f"Missing data file: {e.filename}.")
 
-st.divider()
-st.header("Station precool (M13)")
-st.caption(
-    "Same scenario, same HVAC advisor — only station_precool_advisor differs. A station stop is a "
-    "KNOWN, schedule-certain event (occupancy.py's time_to_next_station_min counts down exactly, "
-    "not a prediction): doors open, passengers board, heat and humidity load rises. Deliberately not "
-    "routed through the same forecast blend (ff_weight) as the general advisor — M10/M12 both found "
-    "that generic ML-forecast blend hurts aggregate energy/comfort; this targets one specific, "
-    "demonstrable event directly instead."
-)
-
-try:
-    without_precool_traj, with_precool_traj, without_precool_score, with_precool_score = (
-        run_precool_comparison(row.city, row.date, row.depart_hour, row.direction, row.pattern, row.load_factor)
-    )
-
-    door_t = with_precool_traj.loc[with_precool_traj["door_open"], "t"].tolist()
-    if door_t:
-        window = range(max(0, door_t[0] - 5), min(len(with_precool_traj), door_t[-1] + 11))
-        peak_without = without_precool_traj.loc[without_precool_traj["t"].isin(window), "t_air_c"].max()
-        peak_with = with_precool_traj.loc[with_precool_traj["t"].isin(window), "t_air_c"].max()
-    else:
-        peak_without = peak_with = float("nan")
-
-    pcol1, pcol2 = st.columns(2)
-    pcol1.metric("Peak cabin temp around stops — no precool", f"{peak_without:.1f} °C")
-    pcol2.metric("Peak cabin temp around stops — with precool", f"{peak_with:.1f} °C",
-                 f"{peak_with - peak_without:+.1f} °C")
-
-    fig_precool, ax_precool = plt.subplots(figsize=(11, 2.8))
-    if door_t:
-        # Same contiguous-run axvspan logic as the tunnel shading above --
-        # marks each station DWELL, not one span per minute.
-        run_start = prev = door_t[0]
+    fig_power, ax_power = plt.subplots(figsize=(11, 2.6))
+    tunnel_t_power = reactive_traj.loc[reactive_traj["in_tunnel"], "t"].tolist()
+    if tunnel_t_power:
+        run_start = prev = tunnel_t_power[0]
         first_label = True
-        for m in door_t[1:] + [None]:
+        for m in tunnel_t_power[1:] + [None]:
             if m is not None and m == prev + 1:
                 prev = m
                 continue
-            ax_precool.axvspan(run_start, prev + 1, color="gray", alpha=0.25,
-                                label="station stop" if first_label else None)
+            ax_power.axvspan(run_start, prev + 1, color="gray", alpha=0.25,
+                              label="tunnel" if first_label else None)
             first_label = False
             if m is not None:
                 run_start = prev = m
-    ax_precool.plot(without_precool_traj["t"], without_precool_traj["t_air_c"], color="#ff7f0e",
-                     linewidth=1.2, label="AI, no precool")
-    ax_precool.plot(with_precool_traj["t"], with_precool_traj["t_air_c"], color="#2ca02c",
-                     linewidth=1.2, label="AI + station precool")
-    ax_precool.set_ylabel("cabin temp (°C)")
-    ax_precool.set_xlabel("minute")
-    ax_precool.legend(loc="upper right", fontsize=8)
-    ax_precool.grid(alpha=0.3)
-    fig_precool.tight_layout()
-    st.pyplot(fig_precool)
+    ax_power.plot(no_tint_traj["t"], no_tint_traj["electrical_w"] / 1000.0, color="#7f7f7f",
+                  linewidth=1.2, label="no tint")
+    ax_power.plot(reactive_traj["t"], reactive_traj["electrical_w"] / 1000.0, color="#ff7f0e",
+                  linewidth=1.4, label="SPD-controlled tint")
+    ax_power.set_ylabel("electrical draw (kW)")
+    ax_power.set_xlabel("minute")
+    ax_power.legend(loc="upper right", fontsize=8)
+    ax_power.grid(alpha=0.3)
+    fig_power.tight_layout()
+    st.pyplot(fig_power)
     st.caption(
-        f"Energy — no precool {without_precool_score.energy_kwh:.2f} kWh vs. with precool "
-        f"{with_precool_score.energy_kwh:.2f} kWh "
-        f"({100.0 * (1.0 - with_precool_score.energy_kwh / without_precool_score.energy_kwh):+.1f}%). "
-        "The green line drops ahead of each shaded stop and holds lower through it — banked thermal "
-        "headroom absorbing the boarding disturbance instead of the cabin warming through it. "
-        "shift_k (config/cabin_params.yaml's hvac.station_precool_shift_k) is a single constant, not "
-        "swept or trend-fitted — see StationPrecoolAdvisor's docstring in src/controllers.py."
+        "Bottom panel shows WHEN energy is actually being spent (`electrical_w`, the same quantity "
+        "the kWh metrics above sum over the whole journey), not just the tint decision. The gray line "
+        "sits above the orange one whenever tinting is actively blocking solar heat the untinted cabin "
+        "would otherwise have to cool -- watch it widen outside the tunnels, where there's real sun to "
+        "block, and close up inside them, where there's none."
+    )
+    st.caption(
+        "AI-driven (anticipatory) tinting was built and tested (see ROADMAP.md's \"M11, continued\" "
+        "section) -- checked across all 23 TEST scenarios, it used MORE energy than this simple "
+        "SPD-style controller in 14/23, averaging +0.34% worse, not better. A fixed t+30min forecast "
+        "fires a tint-clearing dip a full 30 minutes before every real tunnel, while actual sun is "
+        "still hitting the window. Not shown here because it didn't hold up, not because it wasn't "
+        "tried -- `AnticipatoryTintAdvisor` (src/tint_controller.py) still exists and is still tested."
     )
 except FileNotFoundError as e:
     st.error(f"Missing data file: {e.filename}.")
