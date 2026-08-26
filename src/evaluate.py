@@ -22,6 +22,7 @@ from typing import Callable
 
 import pandas as pd
 
+from src import scenarios as scenarios_mod
 from src.cabin_model import CabinInputs, CabinModel
 from src.config import DATA_DIR, load_config
 from src.controllers import ControllerInputs, PlantResponse
@@ -56,6 +57,7 @@ def run_controller(
     advisor_update_interval_min: int = 1,
     tint_controller: object | None = None,
     station_precool_advisor: object | None = None,
+    scenario: object | None = None,
 ) -> pd.DataFrame:
     """Drives one setpoint advisor through one real journey, minute by minute.
 
@@ -161,6 +163,24 @@ def run_controller(
     start = pd.Timestamp(date) + pd.to_timedelta(round(depart_hour * 60), unit="min")
     w = to_minutes(wx, start, len(profile) + horizon)
 
+    # M14: the disturbance layer sits HERE -- after the real weather and the
+    # timetabled occupancy are built, before any controller sees either, and
+    # applied identically to whichever controller this run is driving (the
+    # caller passes the same `scenario` to both arms, same symmetry rule as
+    # PlantResponse and advisor_update_interval_min). Because the advisor's
+    # forecast feature reads `w[...].iloc[t + horizon]` from this SAME frame,
+    # a disturbance written here becomes visible to it exactly one horizon
+    # early through the normal feature path -- there is no separate forecast
+    # channel, and nothing downstream of the controller is touched. See
+    # src/scenarios.py's module docstring for why it is built this way.
+    n_pax_series = profile.n_pax
+    expected_boarding_series = profile.expected_boarding
+    if scenario is not None and not scenario.is_stable():
+        w, occ_overrides = scenarios_mod.apply(w, profile, scenario, cfg)
+        if occ_overrides is not None:
+            n_pax_series = occ_overrides["n_pax"]
+            expected_boarding_series = occ_overrides["expected_boarding"]
+
     model = CabinModel(cfg)
     advisor = controller_factory(model)
     plant = PlantResponse(model)  # one shared instance per run -- see docstring
@@ -174,10 +194,10 @@ def run_controller(
         ghi_fcst = 0.0 if (fcst_t < len(in_tunnel) and in_tunnel[fcst_t]) else float(w["ghi_w_m2"].iloc[fcst_t])
         inputs = ControllerInputs(
             t_air_c=state.t_air_c, t_mass_c=state.t_mass_c, t_out_c=float(w["t_out_c"].iloc[t]),
-            ghi_w_m2=ghi_now, n_pax=profile.n_pax[t],
+            ghi_w_m2=ghi_now, n_pax=n_pax_series[t],
             door_open=profile.door_open[t], q_hvac_actual_w=state.q_hvac_actual_w,
             time_to_next_station_min=profile.time_to_next_station_min[t],
-            expected_boarding=profile.expected_boarding[t],
+            expected_boarding=expected_boarding_series[t],
             t_out_fcst_h=float(w["t_out_c"].iloc[fcst_t]),
             ghi_fcst_h=ghi_fcst,
             time_to_last_station_min=profile.time_to_last_station_min[t],
@@ -216,7 +236,7 @@ def run_controller(
         rows.append({
             "t": t, "t_air_c": r.t_air_c, "t_mass_c": r.t_mass_c, "setpoint_c": setpoint,
             "advised_setpoint_c": advised_setpoint_c, "precool_shift_c": precool_shift_c,
-            "err_c": r.t_air_c - setpoint, "n_pax": profile.n_pax[t],
+            "err_c": r.t_air_c - setpoint, "n_pax": n_pax_series[t],
             "door_open": profile.door_open[t], "in_tunnel": in_tunnel[t],
             "tint_level": tint_level, "q_solar_w": r.q_solar_w,
             # cmd_w is now a SIMULATED PlantResponse output, not "Railflow's
@@ -245,18 +265,61 @@ class ScenarioResult:
     worst_excursion_k: float
     mean_err_k: float
     minutes: int
+    peak_power_kw: float = 0.0
+    mean_power_kw: float = 0.0
+    power_ramp_w_per_min: float = 0.0
+    """M14: mean |P(t) - P(t-1)| over the journey -- how ABRUPTLY the
+    electrical draw moves, independent of how much of it there is. Exists
+    because "smoother power curve" is a claim this project has been asked to
+    make, and a claim needs a number. NOTE, and it must not be dropped when
+    this is presented: measured on the shipped controllers, the anticipatory
+    advisor does NOT currently smooth the curve (-1.0% vs the static
+    schedule, i.e. indistinguishable) and station precool makes it markedly
+    WORSE (-64.9%), because a step change in commanded setpoint produces a
+    step change in commanded power, twice per stop. See ROADMAP.md's M14
+    section."""
+    n_switching_events: int = 0
+    """Times the HVAC crossed between idle and active -- intended as a proxy
+    for compressor cycling (hardware wear, not just energy).
+
+    MEASURED, AND IT TURNS OUT TO BE UNINFORMATIVE FOR THIS PLANT -- kept
+    with that stated rather than quietly dropped. Every scenario, both arms,
+    returns exactly 1 per journey: the initial start-up transition and
+    nothing after it. That is not a bug in the metric, it is a real property
+    of M12's PI PlantResponse -- it modulates continuously and never cycles
+    the compressor off mid-journey, unlike the retired BangBangPlantResponse
+    which cycled constantly by construction. Worth knowing (continuous
+    modulation is genuinely easier on hardware than cycling), but it is a
+    property of the PLANT, not evidence for or against any advisor, so it
+    cannot separate the compared arms. `power_ramp_w_per_min` is the metric
+    that actually discriminates here."""
 
 
 def score(trajectory: pd.DataFrame, cfg: dict) -> ScenarioResult:
-    """Summarises a run_controller() trajectory into the M5 metrics."""
+    """Summarises a run_controller() trajectory into the M5 metrics, plus
+    (M14) the power-shape metrics. All derived from `electrical_w`, the same
+    per-minute quantity energy_kwh already sums -- no new power model was
+    needed, since cabin_model.step() already returns
+    compressor_w + fan_w with COP and actuator lag applied (see ROADMAP.md's
+    M14 section on what already existed before that milestone)."""
     band_k = cfg["comfort"]["band_k"]
+    power_w = trajectory["electrical_w"].to_numpy()
+    # Idle threshold is the fan-only floor: the fan runs continuously, so
+    # "off" never means zero watts. Anything above the minimum observed draw
+    # by more than a small margin is the compressor actually doing work.
+    idle_floor_w = float(power_w.min()) + 100.0
+    active = power_w > idle_floor_w
     return ScenarioResult(
-        energy_kwh=float(trajectory["electrical_w"].sum() / 60000.0),
+        energy_kwh=float(power_w.sum() / 60000.0),
         degree_hours=degree_hours_outside_band(
             trajectory["t_air_c"], trajectory["setpoint_c"], band_k),
         worst_excursion_k=float(trajectory["err_c"].abs().max()),
         mean_err_k=float(trajectory["err_c"].mean()),
         minutes=len(trajectory),
+        peak_power_kw=float(power_w.max() / 1000.0),
+        mean_power_kw=float(power_w.mean() / 1000.0),
+        power_ramp_w_per_min=float(abs(power_w[1:] - power_w[:-1]).mean()) if len(power_w) > 1 else 0.0,
+        n_switching_events=int((active[1:] != active[:-1]).sum()) if len(active) > 1 else 0,
     )
 
 
