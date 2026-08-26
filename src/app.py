@@ -33,6 +33,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import streamlit as st
 
+from src import scenarios as scenarios_mod
 from src.compare_controllers import held_out_test_scenarios
 from src.config import load_config
 from src.controllers import (
@@ -152,6 +153,42 @@ def run_precool_comparison(city, date, depart_hour, direction, pattern, load_fac
     return without_precool, with_precool, score(without_precool, cfg), score(with_precool, cfg)
 
 
+M14_FF_WEIGHT = 0.3
+"""M14's measured result (see ROADMAP.md): turning the forecast blend from
+0.0 (shipped default, used everywhere else in this app) up to 0.3 only helps
+under large, sustained, forecastable disturbance -- and hurts on the calm
+real-weather TEST scenarios the rest of this app runs on. This section is
+the one place that intentionally uses 0.3, to demonstrate the regime where
+it earns its keep; it does not change what ships by default."""
+
+
+@st.cache_data(show_spinner="Running the disturbance scenario...")
+def run_scenario_comparison(scenario_name, city, date, depart_hour, direction, pattern, load_factor):
+    """Same isolation principle as every comparison above: identical
+    environment fed to both arms (the scenario is applied to the weather/
+    occupancy BEFORE either controller sees it, see src/scenarios.py), only
+    the advisor differs. ff_weight=M14_FF_WEIGHT for the AI arm -- the
+    setting M14 measured as helping under disturbance, not the 0.0 default
+    used in the M10-M12 section above.
+    """
+    cfg = load_config()
+    booster = get_booster()
+    scenario = scenarios_mod.get(scenario_name)
+    run_kwargs = dict(cfg=cfg, city=city, date=str(date), depart_hour=depart_hour,
+                       direction=direction, pattern=pattern, load_factor=load_factor,
+                       advisor_update_interval_min=SHIPPED_ADVISOR_UPDATE_INTERVAL_MIN,
+                       scenario=scenario)
+
+    def ai_factory(model):
+        builder = LiveFeatureBuilder(cfg, city=city, direction=direction, pattern=pattern,
+                                      load_factor=load_factor, depart_hour=depart_hour)
+        return AnticipatorySetpointAdvisor(model, booster, builder, ff_weight=M14_FF_WEIGHT)
+
+    base_traj = run_controller(lambda m: ThermostatController(m), **run_kwargs)
+    ai_traj = run_controller(ai_factory, **run_kwargs)
+    return base_traj, ai_traj, score(base_traj, cfg), score(ai_traj, cfg), scenario
+
+
 st.title("Railflow — anticipatory HVAC vs. a static setpoint schedule")
 st.caption(
     "Same simulator and controllers M4–M6 were built and tested on — this demo "
@@ -209,7 +246,8 @@ st.sidebar.caption(
 # range, unedited).
 _default_matches = scenarios.index[scenarios["scenario_id"] == 140].tolist()
 default_index = _default_matches[0] if _default_matches else 0
-choice = st.sidebar.selectbox("Pick a journey", scenarios["label"], index=default_index)
+choice = st.sidebar.selectbox("Pick a journey", scenarios["label"], index=default_index,
+                               key="journey_picker")
 row = scenarios.loc[scenarios["label"] == choice].iloc[0]
 
 st.header("Station precool (M13)")
@@ -298,6 +336,102 @@ try:
         "baseline so the request (bottom) and its effect on temperature (top) can be read together. "
         "shift_k (config/cabin_params.yaml's hvac.station_precool_shift_k) is a single constant, not "
         "swept or trend-fitted -- see StationPrecoolAdvisor's docstring in src/controllers.py."
+    )
+except FileNotFoundError as e:
+    st.error(f"Missing data file: {e.filename}.")
+
+st.divider()
+st.header("Disturbance scenarios (M14)")
+st.caption(
+    "The comparison above and below runs on real fetched 2024 weather, mild enough that the "
+    "forecast blend ships OFF (ff_weight=0.0) by default -- see M10-M12 section. This section "
+    "answers a different question: is there a regime where turning the forecast ON pays off? "
+    "Both controllers fly through the IDENTICAL disturbed environment (src/scenarios.py modifies "
+    "weather/occupancy before either controller sees it) -- shaded red bands mark when the "
+    f"disturbance ran. The AI arm here uses ff_weight={M14_FF_WEIGHT}, the setting M14 measured "
+    "as helping under disturbance, not the 0.0 default used everywhere else in this app."
+)
+
+_scenario_labels = {
+    "stable": "stable (control — no disturbance)",
+    "rapid_warming": "rapid_warming (+6 K outdoor ramp over 30 min)",
+    "solar_surge": "solar_surge (cloud cover, then sun returns)",
+    "crowd_surge": "crowd_surge (+40 passengers beyond timetable)",
+    "combined": "combined (all three at once)",
+}
+scenario_choice = st.selectbox(
+    "Pick a disturbance", list(_scenario_labels), format_func=lambda k: _scenario_labels[k],
+    index=list(_scenario_labels).index("combined"), key="m14_scenario_picker",
+)
+
+try:
+    m14_base_traj, m14_ai_traj, m14_base_score, m14_ai_score, m14_scenario = run_scenario_comparison(
+        scenario_choice, row.city, row.date, row.depart_hour, row.direction, row.pattern, row.load_factor
+    )
+
+    m14_comfort_pct = (100.0 * (1.0 - m14_ai_score.degree_hours / m14_base_score.degree_hours)
+                        if m14_base_score.degree_hours > 0 else 0.0)
+    m14_energy_pct = 100.0 * (1.0 - m14_ai_score.energy_kwh / m14_base_score.energy_kwh)
+
+    m14c1, m14c2, m14c3, m14c4 = st.columns(4)
+    m14c1.metric("Energy — static schedule", f"{m14_base_score.energy_kwh:.2f} kWh")
+    m14c2.metric("Energy — AI (forecast on)", f"{m14_ai_score.energy_kwh:.2f} kWh", f"{m14_energy_pct:+.1f}%")
+    m14c3.metric("Comfort — static schedule", f"{m14_base_score.degree_hours:.2f} K·h")
+    m14c4.metric("Comfort — AI (forecast on)", f"{m14_ai_score.degree_hours:.2f} K·h",
+                 f"{m14_comfort_pct:+.1f}%")
+
+    fig_m14, (ax_m14_t, ax_m14_p, ax_m14_e) = plt.subplots(
+        3, 1, figsize=(11, 8), sharex=True, gridspec_kw={"height_ratios": [2, 2, 1.4]})
+
+    for ax in (ax_m14_t, ax_m14_p, ax_m14_e):
+        for start, end, label in m14_scenario.disturbance_windows():
+            ax.axvspan(start, min(end, len(m14_base_traj) - 1), color="#d62728", alpha=0.10,
+                       label=label if ax is ax_m14_t else None)
+
+    m14_band_k = cfg["comfort"]["band_k"]
+    ax_m14_t.fill_between(m14_base_traj["t"], m14_base_traj["setpoint_c"] - m14_band_k,
+                           m14_base_traj["setpoint_c"] + m14_band_k, color="green", alpha=0.10,
+                           label=f"comfort band (±{m14_band_k:g} K)")
+    ax_m14_t.plot(m14_base_traj["t"], m14_base_traj["setpoint_c"], "--", color="gray",
+                  linewidth=1, label="setpoint")
+    ax_m14_t.plot(m14_base_traj["t"], m14_base_traj["t_air_c"], color="#d62728",
+                  linewidth=1.6, label="static schedule")
+    ax_m14_t.plot(m14_ai_traj["t"], m14_ai_traj["t_air_c"], color="#2ca02c", linewidth=1.6,
+                  label=f"AI (forecast on, ff_weight={M14_FF_WEIGHT})")
+    ax_m14_t.set_ylabel("cabin air temp (°C)")
+    ax_m14_t.legend(loc="upper right", fontsize=8)
+    ax_m14_t.grid(alpha=0.3)
+
+    ax_m14_p.plot(m14_base_traj["t"], m14_base_traj["electrical_w"] / 1000.0, color="#d62728",
+                  linewidth=1.3,
+                  label=f"static schedule (peak {m14_base_score.peak_power_kw:.1f} kW)")
+    ax_m14_p.plot(m14_ai_traj["t"], m14_ai_traj["electrical_w"] / 1000.0, color="#2ca02c",
+                  linewidth=1.3, label=f"AI (peak {m14_ai_score.peak_power_kw:.1f} kW)")
+    ax_m14_p.set_ylabel("electrical draw (kW)")
+    ax_m14_p.legend(loc="upper left", fontsize=8)
+    ax_m14_p.grid(alpha=0.3)
+
+    ax_m14_e.plot(m14_base_traj["t"], m14_base_traj["electrical_w"].cumsum() / 60000.0,
+                  color="#d62728", linewidth=1.3, label=f"static schedule ({m14_base_score.energy_kwh:.2f} kWh)")
+    ax_m14_e.plot(m14_ai_traj["t"], m14_ai_traj["electrical_w"].cumsum() / 60000.0,
+                  color="#2ca02c", linewidth=1.3, label=f"AI ({m14_ai_score.energy_kwh:.2f} kWh)")
+    ax_m14_e.set_ylabel("cumulative\nenergy (kWh)")
+    ax_m14_e.set_xlabel("minute")
+    ax_m14_e.legend(loc="upper left", fontsize=8)
+    ax_m14_e.grid(alpha=0.3)
+
+    fig_m14.tight_layout()
+    st.pyplot(fig_m14)
+
+    st.caption(
+        "Aggregated over all 23 TEST journeys (not just the one selected above), this scenario's "
+        "measured result: see ROADMAP.md's M14 section for the full table. Turning the forecast on "
+        "helps comfort under `rapid_warming`, `crowd_surge`, and `combined` (+1.3% to +3.1%, up to "
+        "22x better than off) and hurts on `stable`/`solar_surge`, where there is nothing sustained "
+        "to anticipate. It costs ~1.1-1.4% more energy in every scenario -- there is no configuration "
+        "in this grid that improves both. **The power curve is NOT smoothed by the AI** -- measured "
+        "`power_ramp_w_per_min` is rougher for the AI in 13 of 15 scenario/weight combinations; that "
+        "claim is not supported by this project's data and is not made here."
     )
 except FileNotFoundError as e:
     st.error(f"Missing data file: {e.filename}.")

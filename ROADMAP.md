@@ -651,16 +651,18 @@ Shipped 15 min / −1.0 K for sitting at the efficiency knee, not for the larges
 | scenario | comfort, forecast OFF (shipped) | comfort, forecast ON (0.3) | verdict |
 |---|---|---|---|
 | `stable` | +0.06% | −0.37% | forecast **hurts** |
-| `solar_surge` (cloud, then sun returns) | +0.08% | −0.30% | forecast **hurts** |
+| `solar_surge` (cloud, then sun returns) | +0.09% | −0.75% | forecast **hurts** |
 | `rapid_warming` (+6 K over 30 min) | +0.53% | **+1.26%** | forecast helps, 2.4x |
 | `crowd_surge` (+40 pax) | +0.10% | **+2.20%** | forecast helps, 22x |
-| `combined` | +0.79% | **+3.12%** | forecast helps, 4x |
+| `combined` | +0.52% | **+2.72%** | forecast helps, 5.2x |
+
+*(Corrected 2026-08-26: an earlier draft of this table read +0.79%/+3.12% for `combined` and +0.08%/−0.30% for `solar_surge` — stale numbers from before a later regeneration of `data/m14_scenario_comparison.csv`. Values above are read directly from that file; reproduce with `python -m src.compare_scenarios`.)*
 
 **This explains the earlier negative results rather than contradicting them.** M10 Phase 2 and M12 both measured `ff_weight > 0` as harmful and shipped 0.0. They were right *for the conditions they measured* — real fetched weather on a fixed timetable, which the `stable` row reproduces exactly (−0.37%, same sign, same magnitude). The forecast was not broken; there was nothing worth anticipating. The two scenarios where it still loses are consistent with that reading: `stable` has no disturbance, and `solar_surge` is *transient* (cloud passes, sun returns) and net load-*reducing*, so acting early on it buys nothing. Anticipation pays when a disturbance is large, **sustained**, and visible ahead — not merely when one exists.
 
 **Energy: the forecast costs, always, with no exception.** Every scenario at `ff_weight=0.3` uses ~1.2–1.4% more energy than at 0.0. There is no configuration in this grid that improves both. Stated plainly, as with every other trade-off in this project.
 
-**`ff_weight=0.6` overshoots.** Comfort falls back in four of five scenarios (`solar_surge` −11.0%, `stable` −8.4%). The useful setting is 0.3; more forecast is not better forecast.
+**`ff_weight=0.6` overshoots.** Comfort falls back in all five scenarios relative to 0.3 (`solar_surge` −14.6%, `stable` −8.4%). The useful setting is 0.3; more forecast is not better forecast.
 
 **The power-smoothness claim is NOT supported, and this needs saying plainly because it is what was asked for.** The team's framing was "before AI the power curve is jagged, with AI it smooths." Measured (`power_ramp_w_per_min`, mean |ΔP| per minute), the AI's curve is *rougher* than the static schedule's in 13 of 15 scenario/weight combinations. The only two that smooth it (`rapid_warming` +3.13%, `combined` +3.11%) occur at `ff_weight=0.6`, where comfort is worse than at 0.3 — so smoothness and comfort want different settings, and neither is free. **Nothing in this project's data supports presenting the AI as smoothing the power curve.** The measurement stands as it came out.
 
