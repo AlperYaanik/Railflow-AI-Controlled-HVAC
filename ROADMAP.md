@@ -604,6 +604,76 @@ Shipped 15 min / −1.0 K for sitting at the efficiency knee, not for the larges
 
 ---
 
+### M14 — Disturbance scenarios: find the regime where anticipation actually pays
+
+**Status:** planned, not yet built. Written down before implementation, per this project's standing practice.
+
+**Why, stated plainly including the part that needs saying.** The team's feedback was that the AI doesn't show a large enough advantage over the non-AI baseline to justify itself, and the request that came with it was to *inject fake data to boost the AI's numbers*. **That is not being done, and this milestone is the alternative.** Fabricated results would collapse under the first technical question at a presentation and would invalidate every honest negative finding this project has already recorded (M10 Phase 2's parity, M11-continued's tint result, M12 attempt 1's regression, M13's re-measurement). The team's own follow-up brief agrees: *"Do NOT... hard-code a predetermined percentage of energy savings... Make the simulation produce them."* This milestone follows that brief.
+
+**The legitimate reframing.** Evaluating a controller under explicit, physically-plausible disturbance scenarios is standard control-engineering practice, not a workaround. The honest hypothesis to test: **anticipatory control pays only when the disturbance is large enough and forecastable enough to be worth acting on early** — and the current 23 TEST scenarios may simply not be in that regime. That is a real, falsifiable claim. It may come back negative, and if it does, that gets recorded like every other negative result here.
+
+**Evidence the hypothesis is worth testing (already measured, this session):** the shipped advisor makes only **4 decisions per 166-minute journey** (`advisor_update_interval_min=50`), the first is structurally always a no-op (the cabin is initialised exactly at setpoint, so error = 0), and `deadband_k=1.0` zeroes anything under ±0.5 K. Result: in **10/23 TEST scenarios the AI's trajectory is bit-identical to the static schedule** — the M12 "parity" finding is not a well-balanced trade-off, it is the mechanism barely engaging. Under mild disturbances there is nothing for anticipation to catch.
+
+**THE BLOCKER, and it decides whether this milestone can work at all:** `ff_weight = 0.0`. The advisor multiplies M4's forecast by zero, so it is pure feedback — **no disturbance injected anywhere will be anticipated until the forecast term is turned back on.** M10 Phase 2 and M12 both found `ff_weight > 0` makes things worse *on the current mild scenarios*. M14's core experiment is whether that reverses under large forecastable disturbances. If `ff_weight > 0` still loses there, the milestone's honest conclusion is that this architecture cannot demonstrate anticipation benefit, and that is what gets written.
+
+**What already exists — checked before planning any of it (the brief's TASK 9):**
+
+| Asked for | Status in this codebase |
+|---|---|
+| Instantaneous electrical power | **Already tracked.** `cabin_model.step()` returns `electrical_w = compressor_w + fan_w`, with `compressor_w = (│q_hvac│ + latent) / COP` and COP degrading with outdoor temperature. Per-minute, in every trajectory. |
+| `P = P_comp + P_fan + P_aux` | **Already this shape** — fan is the auxiliary term. No new power model needed. |
+| Realistic power transients | **Already present.** `q_hvac` is post-actuator: `_actuate()` applies dead-time, first-order lag, and state-dependent supply-air clamping before power is computed. |
+| Deterministic seeds | **Already the pattern** — `data_generator.py` uses `np.random.default_rng(seed=20260818)`. |
+| Safe disturbance insertion point | **Identified:** in `run_controller()`, immediately after `w = to_minutes(...)` and `profile = simulate(...)`. Both the current value (`w[...].iloc[t]`) and the AI's forecast feature (`w[...].iloc[t + horizon]`) read from the *same* array, so a disturbance injected there propagates into what the AI can foresee automatically — exactly the causal chain required, with no separate "fake forecast" path. |
+| Power-ramp metric | **Already computed once** in scratch this session (`sum │Δcmd_w│`) — needs promoting into `score()`. |
+
+**A finding that must not be lost when this is presented:** the ramp-smoothness metric was measured this session and **the AI does not currently smooth the power curve.** Anticipatory vs. thermostat came out −1.0% (indistinguishable), and station precool was **−64.9% worse** — a step change in commanded setpoint produces a step change in commanded power, twice per stop. The team's "before AI the curve is jagged, with AI it smooths" framing is, as of today, **contradicted by this project's own data.** M14 may change that (a controller that acts earlier can spread the same load over more minutes), but the claim has to be earned by measurement, not assumed. If the curve does not smooth, the presentation says so.
+
+**Build plan:**
+- `src/scenarios.py` (new) — a disturbance layer: named, configurable, seeded scenarios that transform the minute-resolution weather/occupancy arrays. Physically plausible and documented as `[ASSUMPTION]` per this project's convention: `stable` (control), `rapid_warming` (outdoor temp ramp), `solar_surge` (GHI step, e.g. emerging from shade into full sun), `crowd_surge` (boarding spike beyond timetable), `combined`.
+- `src/evaluate.py` — `run_controller()` gains `scenario=None` (default = today's behaviour, byte-identical). Applied to BOTH arms identically, same symmetry rule as `PlantResponse` and `advisor_update_interval_min`.
+- `src/evaluate.py::score()` — add `peak_power_kw`, `mean_power_kw`, `power_ramp_w_per_min`, `n_switching_events` alongside the existing energy/comfort/excursion fields.
+- `src/compare_scenarios.py` (new) — runs baseline vs AI across every scenario, reports the full metric table, and re-tests `ff_weight` per scenario (the core experiment).
+- `src/app.py` — a scenario selector plus the power-vs-time and cumulative-energy comparison the brief asks for, with disturbance windows shaded (reusing the existing `axvspan` contiguous-run helper).
+
+**Explicitly NOT doing:** modifying results after simulation, hard-coding a savings percentage, degrading the baseline, deleting unfavourable scenarios, or post-smoothing the AI's power curve. Any smoothing must come from the control policy. Scenarios that make the AI look worse stay in the table.
+
+**Done when:** every scenario runs both arms through the identical environment; the metric table is generated from simulation output; and the conclusion — positive, negative, or mixed — is written up with the same discipline as every other milestone here.
+
+---
+
+### M14 — Result: the hypothesis holds on comfort, and only in the regime it predicted
+
+**Built:** `src/scenarios.py` (disturbance layer), `src/compare_scenarios.py` (the experiment), `src/plot_scenario.py` (the power-vs-time figure), plus `scenario=` on `run_controller()` and four power-shape fields on `score()`.
+
+**Headline, stated as measured.** Turning M4's forecast on (`ff_weight` 0.0 → 0.3) improves comfort **only** under large, sustained, forecastable disturbance — and degrades it otherwise. Aggregated over the 23 TEST journeys, both arms flying the identical disturbed environment:
+
+| scenario | comfort, forecast OFF (shipped) | comfort, forecast ON (0.3) | verdict |
+|---|---|---|---|
+| `stable` | +0.06% | −0.37% | forecast **hurts** |
+| `solar_surge` (cloud, then sun returns) | +0.08% | −0.30% | forecast **hurts** |
+| `rapid_warming` (+6 K over 30 min) | +0.53% | **+1.26%** | forecast helps, 2.4x |
+| `crowd_surge` (+40 pax) | +0.10% | **+2.20%** | forecast helps, 22x |
+| `combined` | +0.79% | **+3.12%** | forecast helps, 4x |
+
+**This explains the earlier negative results rather than contradicting them.** M10 Phase 2 and M12 both measured `ff_weight > 0` as harmful and shipped 0.0. They were right *for the conditions they measured* — real fetched weather on a fixed timetable, which the `stable` row reproduces exactly (−0.37%, same sign, same magnitude). The forecast was not broken; there was nothing worth anticipating. The two scenarios where it still loses are consistent with that reading: `stable` has no disturbance, and `solar_surge` is *transient* (cloud passes, sun returns) and net load-*reducing*, so acting early on it buys nothing. Anticipation pays when a disturbance is large, **sustained**, and visible ahead — not merely when one exists.
+
+**Energy: the forecast costs, always, with no exception.** Every scenario at `ff_weight=0.3` uses ~1.2–1.4% more energy than at 0.0. There is no configuration in this grid that improves both. Stated plainly, as with every other trade-off in this project.
+
+**`ff_weight=0.6` overshoots.** Comfort falls back in four of five scenarios (`solar_surge` −11.0%, `stable` −8.4%). The useful setting is 0.3; more forecast is not better forecast.
+
+**The power-smoothness claim is NOT supported, and this needs saying plainly because it is what was asked for.** The team's framing was "before AI the power curve is jagged, with AI it smooths." Measured (`power_ramp_w_per_min`, mean |ΔP| per minute), the AI's curve is *rougher* than the static schedule's in 13 of 15 scenario/weight combinations. The only two that smooth it (`rapid_warming` +3.13%, `combined` +3.11%) occur at `ff_weight=0.6`, where comfort is worse than at 0.3 — so smoothness and comfort want different settings, and neither is free. **Nothing in this project's data supports presenting the AI as smoothing the power curve.** The measurement stands as it came out.
+
+**`n_switching_events` turned out uninformative, kept with that stated.** Every scenario, both arms: exactly 1 per journey. Not a metric bug — M12's PI `PlantResponse` modulates continuously and never cycles the compressor off, unlike the retired bang-bang plant. Genuinely good for hardware wear, but a property of the *plant*, so it cannot separate the compared arms.
+
+**A scenario that had to be fixed mid-flight, recorded rather than quietly corrected.** `solar_surge` was first written as *added* irradiance (+350 W/m²). On a midday departure the real fetched GHI is already 891–924 W/m², so the addition clipped against the sourced 2024 maximum (Aswan 1016 W/m²) and delivered an effective +100 — a 0.5% energy disturbance, i.e. nothing. Sun cannot exceed clear-sky; only cloud can subtract from it. Re-modelled as attenuation-then-recovery (`ghi_cloud_factor=0.35`), which both bites properly and is what an intermittent-cloud day actually does.
+
+**Not done, and not claimed:** sensor noise / forecast-uncertainty robustness, a trajectory-optimising (MPC) controller, and multi-objective weight tuning were all in the original brief and are not built. The advisor still consumes a point forecast, not a distribution.
+
+**Honest summary for presentation.** The defensible claim is *"the forecast earns its keep under large sustained disturbances — +1.3% to +3.1% comfort, up to 22x better than without it — at about 1.4% more energy, and it does not help on calm days, which is why it ships off by default."* That is a conditional, measured claim with a mechanism behind it. The claim *"AI reduces energy and smooths the power curve"* is not supported by this project's own data and should not be made.
+
+---
+
 ## What must never be cut
 
 If time runs short, cut in this order: the live dashboard (→ static plots), the multi-season data (→ one season), the serial bridge implementation (→ protocol document only).
