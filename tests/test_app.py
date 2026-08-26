@@ -111,7 +111,7 @@ def test_switching_scenarios_produces_the_matching_different_numbers(require_mod
              f"load {target.load_factor}")
 
     at = AppTest.from_file("src/app.py", default_timeout=60).run()
-    at.selectbox[0].select(label).run()
+    at.selectbox(key="journey_picker").select(label).run()
     assert not at.exception
 
     expected = compare(scenarios=scenarios.iloc[[2]]).iloc[0]
