@@ -9,7 +9,24 @@ predicts conditions ahead of time and acts early instead.
 
 Modelled on the **Cairo–Alexandria** intercity corridor (Egyptian National
 Railways, mainline / EN 13129). Built for the Siemens Mobility Fit4Rail
-programme.
+programme. This is an independent student project: it is not affiliated with,
+or endorsed by, Siemens or Egyptian National Railways, and every number in it
+comes from a parameterised simulation, not from real train data.
+
+## The physical demonstrator
+
+A scale-model train cabin built by the team for the demo: a 3D-printed shell
+with an indoor/outdoor temperature-humidity sensor pair, a motion (occupancy)
+sensor, roof ventilation fans, status lighting and a 16x2 LCD showing live
+readings. This repository is the **software side** — the cabin simulator, the
+forecaster, the controllers and the UART protocol (`docs/serial_protocol.md`)
+the board speaks. The board firmware itself is not part of this repository.
+
+![Scale-model cabin, side view: sensor on the nose, seats, and status lighting](docs/images/prototype-cabin-side-view.jpg)
+
+| Roof fans and light sensor | LCD readout (indoor / outdoor temperature, motion) |
+|---|---|
+| ![Two roof ventilation fans and a light sensor module](docs/images/prototype-roof-fans-sensor.jpg) | ![16x2 LCD showing In/Out temperature and motion status](docs/images/prototype-lcd-display.jpg) |
 
 ## Setup
 
@@ -36,7 +53,7 @@ Tests and scripts that need weather/data/model skip with an actionable message
 python -m pytest tests/ -q
 ```
 
-283 tests, all passing — the earlier 3 `xfail` (M5/M6 directional
+297 tests, all passing — the earlier 3 `xfail` (M5/M6 directional
 comparisons pinned to the pre-M10 watts-dispatch law) are gone, not because
 they were deleted, but because M10 Phase 2's re-tune earned honest,
 currently-passing assertions in their place (see `ROADMAP.md`'s M10
@@ -350,6 +367,12 @@ alternative (a constant all-journey setpoint bias buys +5.7% comfort for
 project's clearest evidence that anticipating a *specific known event*
 beats a blanket setpoint change — stated honestly: precool costs energy, it
 does not save it. Full sweep in ROADMAP.md's M13 section.
+
+## Data attribution
+
+Historical weather comes from the [Open-Meteo](https://open-meteo.com/)
+Archive API ([CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)). The
+downloaded data is not committed; `python -m src.weather` fetches it.
 
 ## License
 
