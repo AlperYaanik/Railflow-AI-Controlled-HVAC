@@ -24,6 +24,9 @@ checkpoints/*.pt
 # CatBoost's own training-log side effect (src/benchmark_models.py)
 catboost_info/
 
+# PlatformIO build output (firmware/railflow-board)
+.pio/
+
 # IDE
 .vscode/
 .idea/

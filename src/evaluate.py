@@ -234,7 +234,8 @@ def run_controller(
         # Easy to conflate the two; they answer different questions.
         setpoint = model.setpoint(inputs.t_out_c)
         rows.append({
-            "t": t, "t_air_c": r.t_air_c, "t_mass_c": r.t_mass_c, "setpoint_c": setpoint,
+            "t": t, "t_air_c": r.t_air_c, "t_mass_c": r.t_mass_c, "t_out_c": inputs.t_out_c,
+            "setpoint_c": setpoint,
             "advised_setpoint_c": advised_setpoint_c, "precool_shift_c": precool_shift_c,
             "err_c": r.t_air_c - setpoint, "n_pax": n_pax_series[t],
             "door_open": profile.door_open[t], "in_tunnel": in_tunnel[t],

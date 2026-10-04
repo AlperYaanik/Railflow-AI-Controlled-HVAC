@@ -110,6 +110,7 @@ class SerialBridge:
     def __init__(self, port: str, baudrate: int = BAUD_RATE, timeout: float = 1.0):
         self._ser = serial.serial_for_url(port, baudrate=baudrate, timeout=timeout)
         self._seq = 0
+        self._rx = b""
 
     def send(self, t_in_c: float, t_out_c: float, n_pass: int, setpoint_c: float, q_cmd: float) -> bytes:
         """Encodes and writes one frame, then advances the sequence counter.
@@ -119,6 +120,23 @@ class SerialBridge:
         self._ser.write(frame)
         self._seq = (self._seq + 1) % 256
         return frame
+
+    def write_raw(self, data: bytes) -> None:
+        """Writes bytes that are not an RFP1 "R" frame, e.g. the board-extension
+        fan command (docs/board_extension.md). Does not touch the R sequence
+        counter: each frame type keeps its own."""
+        self._ser.write(data)
+
+    def read_lines(self) -> list[bytes]:
+        """Returns every complete '\\n'-terminated line received since the last
+        call, without blocking. A trailing partial line stays buffered until its
+        '\\n' arrives. Used for the board's telemetry (docs/board_extension.md §3);
+        the one-way R-frame sender above never reads."""
+        waiting = self._ser.in_waiting
+        if waiting:
+            self._rx += self._ser.read(waiting)
+        *lines, self._rx = self._rx.split(b"\n")
+        return lines
 
     def close(self) -> None:
         self._ser.close()

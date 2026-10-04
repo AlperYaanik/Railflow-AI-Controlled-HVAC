@@ -18,9 +18,21 @@ comes from a parameterised simulation, not from real train data.
 A scale-model train cabin built by the team for the demo: a 3D-printed shell
 with an indoor/outdoor temperature-humidity sensor pair, a motion (occupancy)
 sensor, roof ventilation fans, status lighting and a 16x2 LCD showing live
-readings. This repository is the **software side** — the cabin simulator, the
-forecaster, the controllers and the UART protocol (`docs/serial_protocol.md`)
-the board speaks. The board firmware itself is not part of this repository.
+readings. This repository holds both sides: the cabin simulator, the
+forecaster and the controllers, and the ESP32 firmware for the board
+(`firmware/railflow-board/`). They talk over the UART protocol in
+`docs/serial_protocol.md` and `docs/board_extension.md`. The board shows live
+readings, runs its two fans automatically from the setpoint Railflow
+recommends (or at a fixed speed you set), and reports back:
+
+```bash
+python -m src.board_link --port COM5 replay        # stream a simulated journey to the board
+python -m src.board_link --port COM5 fan manual 60  # or set the fans by hand
+```
+
+The firmware's protocol code is checked against the Python reference by the
+test suite; the sensor, LCD and fan code has been compiled but not yet run on
+the physical board.
 
 ![Scale-model cabin, side view: sensor on the nose, seats, and status lighting](docs/images/prototype-cabin-side-view.jpg)
 
@@ -53,7 +65,7 @@ Tests and scripts that need weather/data/model skip with an actionable message
 python -m pytest tests/ -q
 ```
 
-297 tests, all passing — the earlier 3 `xfail` (M5/M6 directional
+349 tests, all passing — the earlier 3 `xfail` (M5/M6 directional
 comparisons pinned to the pre-M10 watts-dispatch law) are gone, not because
 they were deleted, but because M10 Phase 2's re-tune earned honest,
 currently-passing assertions in their place (see `ROADMAP.md`'s M10
@@ -152,6 +164,9 @@ to actual hardware; nothing else about the call changes.
 | `src/sweep_tau_act.py`, `src/plot_tau_act_sweep.py` | M6 — sweeps the unknown actuator lag rather than asserting a value |
 | `src/app.py` | M7 — Streamlit live demo, runs the same simulator with both controllers side by side |
 | `src/serial_bridge.py` | M8 — the UART sender to whoever owns the board; validated against pyserial's built-in loopback |
+| `src/board_link.py` | Host side of the demo board: fan commands, telemetry, and `replay`, which streams a simulated journey's setpoints to it |
+| `firmware/railflow-board/` | ESP32 firmware for the demonstrator (sensors, LCD, fans); see its README for wiring and flashing |
+| `docs/board_extension.md` | The `F` (fan) and `T` (telemetry) frames added next to the original setpoint frame |
 | `src/benchmark_models.py` | M9 — LightGBM (tuned) vs linear regression, random forest, XGBoost, CatBoost, on the same chronological split |
 | `src/shap_analysis.py` | M9 — SHAP feature attribution on the forecaster, verified correct (not just non-crashing) against LightGBM's categorical features |
 | `tests/` | Physics (including the M9 humidity moisture balance), occupancy, features, training, controllers, the app, the serial bridge, the model benchmark, SHAP, and cross-layer integration tests |

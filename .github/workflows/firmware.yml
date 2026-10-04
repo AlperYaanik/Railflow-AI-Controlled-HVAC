@@ -1,0 +1,33 @@
+name: firmware
+
+on:
+  push:
+    paths:
+      - "firmware/**"
+      - "src/board_link.py"
+      - "src/serial_bridge.py"
+      - "tests/test_firmware_protocol.py"
+      - "tests/test_board_link.py"
+      - ".github/workflows/firmware.yml"
+  pull_request:
+
+jobs:
+  protocol-cross-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pytest pyserial pandas pyyaml numpy lightgbm requests
+      - run: python -m pytest tests/test_firmware_protocol.py tests/test_board_link.py -q
+
+  esp32-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install platformio
+      - run: pio run -d firmware/railflow-board

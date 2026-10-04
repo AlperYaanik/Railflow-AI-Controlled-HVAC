@@ -5,6 +5,10 @@ Railflow's own sender (`src/serial_bridge.py`) does is specified here; the
 board only needs this document, not the Python source, to build a
 compatible receiver in any language.
 
+> The demo board also takes a fan-mode frame and reports telemetry back. Those
+> are a separate, additive protocol in [`board_extension.md`](board_extension.md);
+> this document's R frame is unchanged by it.
+
 ## 1. Scope and direction
 
 **One-way: Railflow (the compute unit running the controller) → the board
